@@ -1,0 +1,65 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function hasValidUserId(userId) {
+      return request.resource.data.userId == userId;
+    }
+    
+    match /users/{userId} {
+      // Allow users to read their own profile
+      allow read: if isOwner(userId);
+      
+      // Allow users to create their own profile
+      allow create: if isOwner(userId) && hasValidUserId(userId);
+      
+      // Allow users to update their own profile, ensuring userId doesn't change
+      allow update: if isOwner(userId) && 
+                     request.resource.data.userId == userId &&
+                     (!resource.exists || resource.data.userId == userId);
+      
+      match /transactions/{transactionId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && hasValidUserId(userId);
+        allow update: if isOwner(userId) && 
+                      request.resource.data.userId == userId &&
+                      resource.data.userId == userId;
+        allow delete: if isOwner(userId) && resource.data.userId == userId;
+      }
+      
+      match /budgets/{budgetId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && hasValidUserId(userId);
+        allow update: if isOwner(userId) && 
+                      request.resource.data.userId == userId &&
+                      resource.data.userId == userId;
+        allow delete: if isOwner(userId) && resource.data.userId == userId;
+      }
+      
+      match /recurringPayments/{paymentId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && hasValidUserId(userId);
+        allow update: if isOwner(userId) && 
+                      request.resource.data.userId == userId &&
+                      resource.data.userId == userId;
+        allow delete: if isOwner(userId) && resource.data.userId == userId;
+      }
+      
+      match /categories/{categoryId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && hasValidUserId(userId);
+        allow update: if isOwner(userId) && 
+                      request.resource.data.userId == userId &&
+                      resource.data.userId == userId;
+        allow delete: if isOwner(userId) && resource.data.userId == userId;
+      }
+    }
+  }
+}
