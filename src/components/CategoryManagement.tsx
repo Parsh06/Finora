@@ -323,22 +323,20 @@ export const CategoryManagement = ({ isOpen, onClose }: CategoryManagementProps)
               <div className="flex gap-2 mb-4">
                 <button
                   onClick={() => setActiveTab("expense")}
-                  className={`flex-1 py-2 px-4 rounded-xl font-medium transition-all flex items-center justify-center gap-2 ${
-                    activeTab === "expense"
+                  className={`flex-1 py-2 px-4 rounded-xl font-medium transition-all flex items-center justify-center gap-2 ${activeTab === "expense"
                       ? "bg-primary text-primary-foreground"
                       : "bg-muted/20 text-muted-foreground hover:bg-muted/40"
-                  }`}
+                    }`}
                 >
                   <TrendingDown className="w-4 h-4" />
                   Expenses
                 </button>
                 <button
                   onClick={() => setActiveTab("income")}
-                  className={`flex-1 py-2 px-4 rounded-xl font-medium transition-all flex items-center justify-center gap-2 ${
-                    activeTab === "income"
+                  className={`flex-1 py-2 px-4 rounded-xl font-medium transition-all flex items-center justify-center gap-2 ${activeTab === "income"
                       ? "bg-primary text-primary-foreground"
                       : "bg-muted/20 text-muted-foreground hover:bg-muted/40"
-                  }`}
+                    }`}
                 >
                   <TrendingUp className="w-4 h-4" />
                   Income
@@ -379,11 +377,10 @@ export const CategoryManagement = ({ isOpen, onClose }: CategoryManagementProps)
                       key={category.id}
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
-                      className={`p-4 rounded-xl border transition-all ${
-                        category.isActive
+                      className={`p-4 rounded-xl border transition-all ${category.isActive
                           ? "bg-muted/20 border-border/50"
                           : "bg-muted/10 border-border/30 opacity-60"
-                      }`}
+                        }`}
                     >
                       <div className="flex items-center gap-4">
                         <div
@@ -416,14 +413,12 @@ export const CategoryManagement = ({ isOpen, onClose }: CategoryManagementProps)
                         <div className="flex items-center gap-2">
                           <button
                             onClick={() => toggleCategoryActive(category)}
-                            className={`w-10 h-6 rounded-full transition-all ${
-                              category.isActive ? "bg-primary" : "bg-muted/50"
-                            }`}
+                            className={`w-10 h-6 rounded-full transition-all ${category.isActive ? "bg-primary" : "bg-muted/50"
+                              }`}
                           >
                             <div
-                              className={`w-4 h-4 rounded-full bg-white transition-all ${
-                                category.isActive ? "translate-x-5" : "translate-x-1"
-                              }`}
+                              className={`w-4 h-4 rounded-full bg-white transition-all ${category.isActive ? "translate-x-5" : "translate-x-1"
+                                }`}
                             />
                           </button>
                           <button
@@ -499,11 +494,10 @@ export const CategoryManagement = ({ isOpen, onClose }: CategoryManagementProps)
                             <button
                               key={icon}
                               onClick={() => setFormData({ ...formData, icon })}
-                              className={`w-10 h-10 rounded-lg text-xl flex items-center justify-center transition-all ${
-                                formData.icon === icon
+                              className={`w-10 h-10 rounded-lg text-xl flex items-center justify-center transition-all ${formData.icon === icon
                                   ? "bg-primary text-primary-foreground scale-110"
                                   : "bg-muted/20 hover:bg-muted/40"
-                              }`}
+                                }`}
                             >
                               {icon}
                             </button>
@@ -521,11 +515,10 @@ export const CategoryManagement = ({ isOpen, onClose }: CategoryManagementProps)
                             <button
                               key={color}
                               onClick={() => setFormData({ ...formData, color })}
-                              className={`w-10 h-10 rounded-lg transition-all ${
-                                formData.color === color
+                              className={`w-10 h-10 rounded-lg transition-all ${formData.color === color
                                   ? "ring-2 ring-primary ring-offset-2 scale-110"
                                   : "hover:scale-105"
-                              }`}
+                                }`}
                               style={{ backgroundColor: color }}
                             />
                           ))}
@@ -545,14 +538,12 @@ export const CategoryManagement = ({ isOpen, onClose }: CategoryManagementProps)
                                 isActive: !formData.isActive,
                               })
                             }
-                            className={`w-12 h-6 rounded-full transition-all ${
-                              formData.isActive ? "bg-primary" : "bg-muted/50"
-                            }`}
+                            className={`w-12 h-6 rounded-full transition-all ${formData.isActive ? "bg-primary" : "bg-muted/50"
+                              }`}
                           >
                             <div
-                              className={`w-4 h-4 rounded-full bg-white transition-all ${
-                                formData.isActive ? "translate-x-7" : "translate-x-1"
-                              }`}
+                              className={`w-4 h-4 rounded-full bg-white transition-all ${formData.isActive ? "translate-x-7" : "translate-x-1"
+                                }`}
                             />
                           </button>
                         </div>
@@ -685,11 +676,10 @@ export const CategoryManagement = ({ isOpen, onClose }: CategoryManagementProps)
                           <button
                             key={cat.id}
                             onClick={() => setReassignToCategory(cat.id!)}
-                            className={`w-full p-3 rounded-xl border-2 transition-all text-left ${
-                              reassignToCategory === cat.id
+                            className={`w-full p-3 rounded-xl border-2 transition-all text-left ${reassignToCategory === cat.id
                                 ? "border-primary bg-primary/10"
                                 : "border-border/50 bg-muted/20 hover:border-primary/50"
-                            }`}
+                              }`}
                           >
                             <div className="flex items-center gap-3">
                               <div
@@ -738,4 +728,3 @@ export const CategoryManagement = ({ isOpen, onClose }: CategoryManagementProps)
     </AnimatePresence>
   );
 };
-

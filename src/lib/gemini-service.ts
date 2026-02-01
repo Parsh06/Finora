@@ -156,7 +156,7 @@ const categorizeExpense = (merchant: string, items?: string[]): string => {
  * Extract bill data from image using Gemini API
  * Uses inline image data method for bills (typically < 20MB)
  */
-export const scanBill = async (imageFile: File): Promise<BillData> => {
+export const scanBill = async (imageFile: File, userCategories?: string[]): Promise<BillData> => {
   if (!GEMINI_API_KEY) {
     throw new Error("Gemini API key is not configured. Please set VITE_GEMINI_API_KEY in your .env file.");
   }
@@ -173,14 +173,19 @@ export const scanBill = async (imageFile: File): Promise<BillData> => {
 
     // Enhanced prompt for better OCR and bill extraction
     const todayDate = new Date().toISOString().split("T")[0];
-    const prompt = `You are an expert at reading and extracting information from bills, receipts, and invoices. 
+    const categoryPrompt = userCategories && userCategories.length > 0
+      ? `\nClassification Rules:\n- Classify the expense into one of these EXACT categories: ${userCategories.join(", ")}\n- If it doesn't fit any, use "Other"`
+      : `\nClassification Rules:\n- Classify the expense into a standard category (e.g., Food, Transport, Shopping, Bills, etc.)`;
 
+    const prompt = `You are an expert at reading and extracting information from bills, receipts, and invoices. 
+    
 Analyze this bill/receipt image carefully and extract all visible information. Pay special attention to:
 - Total amount (final amount to pay, including taxes)
 - Transaction date (use the date on the bill, not today's date)
 - Merchant/store/vendor name
 - Items purchased (if visible)
 - Payment method (cash, card, UPI, online, etc.)
+${categoryPrompt}
 
 Return the extracted information in JSON format with the following structure:
 {
@@ -188,7 +193,8 @@ Return the extracted information in JSON format with the following structure:
   "date": <date in YYYY-MM-DD format from the bill>,
   "merchant": <merchant/store name as it appears on the bill>,
   "items": [<array of main items purchased, maximum 5 items>],
-  "paymentMethod": <payment method: "cash", "card", "upi", "online", or "other" if visible>
+  "paymentMethod": <payment method: "cash", "card", "upi", "online", or "other" if visible>,
+  "category": <the classified category based on the rules above>
 }
 
 CRITICAL INSTRUCTIONS:
@@ -247,7 +253,7 @@ Now analyze the image and return the JSON:`;
       try {
         const errorData = await response.json();
         errorMessage = errorData.error?.message || errorMessage;
-        
+
         // Provide helpful error messages
         if (response.status === 400) {
           errorMessage = `Invalid request: ${errorMessage}. Please check your image format.`;
@@ -269,14 +275,14 @@ Now analyze the image and return the JSON:`;
 
     // Extract text from response
     let billJson: any = {};
-    
+
     if (data.candidates && data.candidates[0]?.content?.parts?.[0]?.text) {
       const responseText = data.candidates[0].content.parts[0].text.trim();
-      
+
       // Parse JSON response (handle markdown code blocks if present)
       try {
         let jsonString = responseText;
-        
+
         // Remove markdown code blocks if present
         if (jsonString.includes("```")) {
           const jsonMatch = jsonString.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
@@ -290,7 +296,7 @@ Now analyze the image and return the JSON:`;
             }
           }
         }
-        
+
         billJson = JSON.parse(jsonString);
       } catch (parseError) {
         console.error("Failed to parse JSON response:", responseText);
@@ -315,7 +321,7 @@ Now analyze the image and return the JSON:`;
 
     const merchant = (billJson.merchant || "").trim() || "Unknown Merchant";
     let dateStr = billJson.date || todayDate;
-    
+
     // Validate date format
     if (dateStr && typeof dateStr === "string") {
       // Try to parse and reformat date
@@ -333,10 +339,10 @@ Now analyze the image and return the JSON:`;
       dateStr = todayDate;
     }
 
-    const items = Array.isArray(billJson.items) 
+    const items = Array.isArray(billJson.items)
       ? billJson.items.slice(0, 5).filter((item: any) => item && String(item).trim())
       : [];
-    
+
     let paymentMethod = billJson.paymentMethod;
     if (paymentMethod && typeof paymentMethod === "string") {
       paymentMethod = paymentMethod.toLowerCase().trim();
@@ -356,8 +362,22 @@ Now analyze the image and return the JSON:`;
       paymentMethod = undefined;
     }
 
-    // Categorize the expense
-    const category = categorizeExpense(merchant, items);
+    // Categorize using AI result if available, otherwise fallback
+    // Note: We prefer the AI's classification if we provided user categories
+    let category = "other";
+    if (billJson.category && typeof billJson.category === "string") {
+      // If we passed user categories, try to match exactly (case insensitive)
+      if (userCategories && userCategories.length > 0) {
+        const match = userCategories.find(c => c.toLowerCase() === billJson.category.toLowerCase());
+        category = match ? match.toLowerCase() : (categorizeExpense(merchant, items) || "other");
+      } else {
+        // Otherwise use our static categorizer as fallback or validity check
+        const staticCat = categorizeExpense(merchant, items);
+        category = staticCat !== "other" ? staticCat : billJson.category.toLowerCase();
+      }
+    } else {
+      category = categorizeExpense(merchant, items);
+    }
 
     // Calculate confidence based on data completeness and quality
     let confidence = 60; // Base confidence
@@ -381,7 +401,7 @@ Now analyze the image and return the JSON:`;
     };
   } catch (error: any) {
     console.error("Bill scanning error:", error);
-    
+
     // Provide user-friendly error messages
     if (error.message.includes("API key")) {
       throw new Error("Gemini API key is not configured. Please set VITE_GEMINI_API_KEY in your .env file.");

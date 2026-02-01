@@ -221,7 +221,7 @@ export const addTransaction = async (
     console.log("Collection reference:", collectionRef.path);
 
     const docRef = await addDoc(collectionRef, cleanedTransaction);
-    
+
     console.log("✅ Transaction saved successfully!");
     console.log("Document ID:", docRef.id);
     console.log("Document path:", docRef.path);
@@ -230,7 +230,7 @@ export const addTransaction = async (
       ...cleanedTransaction,
       date: cleanedTransaction.date?.toDate?.()?.toISOString() || cleanedTransaction.date,
     });
-    
+
     return docRef.id;
   } catch (error: any) {
     console.error("❌ Firestore error adding transaction:", error);
@@ -239,7 +239,7 @@ export const addTransaction = async (
       message: error.message,
       stack: error.stack,
     });
-    
+
     // Provide more helpful error messages
     if (error.code === "permission-denied") {
       throw new Error("Permission denied. Please check your Firestore security rules.");
@@ -248,7 +248,7 @@ export const addTransaction = async (
     } else if (error.code === "unavailable") {
       throw new Error("Firestore service is temporarily unavailable. Please try again.");
     }
-    
+
     throw error;
   }
 };
@@ -265,12 +265,12 @@ export const updateTransaction = async (
     "transactions",
     transactionId
   );
-  
+
   // Filter out undefined values and build update data
   const updateData: any = {
     updatedAt: Timestamp.now(),
   };
-  
+
   // Only include fields that are actually being updated (not undefined)
   if (updates.title !== undefined) updateData.title = updates.title;
   if (updates.category !== undefined) updateData.category = updates.category;
@@ -283,12 +283,12 @@ export const updateTransaction = async (
   if (updates.note !== undefined && updates.note !== null && updates.note !== "") {
     updateData.note = updates.note;
   }
-  
+
   // Convert date if it's a Date object
   if (updates.date !== undefined) {
     updateData.date = updates.date instanceof Date ? Timestamp.fromDate(updates.date) : updates.date;
   }
-  
+
   await updateDoc(transactionRef, updateData);
 };
 
@@ -363,19 +363,19 @@ export const updateBudget = async (
     "budgets",
     budgetId
   );
-  
+
   // Filter out undefined values
   const updateData: any = {
     updatedAt: Timestamp.now(),
   };
-  
+
   // Only include fields that are actually being updated (not undefined)
   if (updates.category !== undefined) updateData.category = updates.category;
   if (updates.icon !== undefined) updateData.icon = updates.icon;
   if (updates.limit !== undefined) updateData.limit = updates.limit;
   if (updates.spent !== undefined) updateData.spent = updates.spent;
   if (updates.period !== undefined) updateData.period = updates.period;
-  
+
   await updateDoc(budgetRef, updateData);
 };
 
@@ -427,20 +427,20 @@ export const addRecurringPayment = async (
   // Import here to avoid circular dependency
   const { createTransactionFromRecurring, calculateNextRunDate } = await import("./recurring-transactions");
   const { format, parseISO, isToday, startOfDay } = await import("date-fns");
-  
+
   // Filter out undefined values as Firestore doesn't support them
   const startDateStr = payment.startDate || payment.nextDate || format(new Date(), "yyyy-MM-dd");
   const startDate = parseISO(startDateStr);
   const today = startOfDay(new Date());
   const startDateDay = startOfDay(startDate);
-  
+
   // Calculate next run date (will be set to 4:00 AM IST)
   const nextRunDate = calculateNextRunDate(
     startDate,
     payment.frequency || "monthly",
     startDate
   );
-  
+
   const paymentData: any = {
     userId,
     name: payment.name,
@@ -471,7 +471,7 @@ export const addRecurringPayment = async (
 
   const docRef = await addDoc(recurringPaymentsCollection(userId), paymentData);
   const recurringPaymentId = docRef.id;
-  
+
   // If startDate === today AND status is active, create transaction immediately
   if (isToday(startDateDay) && paymentData.status === "active") {
     try {
@@ -479,7 +479,7 @@ export const addRecurringPayment = async (
         id: recurringPaymentId,
         ...paymentData,
       };
-      
+
       await createTransactionFromRecurring(
         userId,
         recurringPayment,
@@ -492,7 +492,7 @@ export const addRecurringPayment = async (
       // Transaction can be created later by the background job
     }
   }
-  
+
   return recurringPaymentId;
 };
 
@@ -508,12 +508,12 @@ export const updateRecurringPayment = async (
     "recurringPayments",
     paymentId
   );
-  
+
   // Filter out undefined values
   const updateData: any = {
     updatedAt: Timestamp.now(),
   };
-  
+
   // Only include fields that are actually being updated (not undefined)
   if (updates.name !== undefined) updateData.name = updates.name;
   if (updates.amount !== undefined) updateData.amount = updates.amount;
@@ -535,14 +535,14 @@ export const updateRecurringPayment = async (
     updateData.status = updates.isActive ? "active" : "paused"; // Sync status
   }
   if (updates.reminderEnabled !== undefined) updateData.reminderEnabled = updates.reminderEnabled;
-  
+
   // Remove undefined values
   Object.keys(updateData).forEach(key => {
     if (updateData[key] === undefined) {
       delete updateData[key];
     }
   });
-  
+
   await updateDoc(paymentRef, updateData);
 };
 
@@ -592,12 +592,12 @@ export const updateUserProfile = async (
   updates: Partial<UserProfile>
 ): Promise<void> => {
   const userRef = doc(db, "users", userId);
-  
+
   // Filter out undefined values
   const updateData: any = {
     updatedAt: Timestamp.now(),
   };
-  
+
   // Only include fields that are actually being updated (not undefined)
   if (updates.name !== undefined) updateData.name = updates.name;
   if (updates.email !== undefined) updateData.email = updates.email;
@@ -606,7 +606,7 @@ export const updateUserProfile = async (
   }
   if (updates.currency !== undefined) updateData.currency = updates.currency;
   if (updates.userId !== undefined) updateData.userId = updates.userId;
-  
+
   await updateDoc(userRef, updateData);
 };
 
@@ -661,7 +661,7 @@ export const updateCategory = async (
   updates: Partial<Category>
 ): Promise<void> => {
   const categoryRef = doc(db, "users", userId, "categories", categoryId);
-  
+
   const updateData: any = {
     updatedAt: Timestamp.now(),
   };
@@ -725,7 +725,7 @@ export const reassignTransactions = async (
   const transactionsRef = transactionsCollection(userId);
   const q = query(transactionsRef, where("category", "==", fromCategory));
   const querySnapshot = await getDocs(q);
-  
+
   const batch = querySnapshot.docs.map((doc) =>
     updateDoc(doc.ref, { category: toCategory, updatedAt: Timestamp.now() })
   );
@@ -742,5 +742,289 @@ export const getCategoryUsageCount = async (
   const q = query(transactionsRef, where("category", "==", categoryName));
   const querySnapshot = await getDocs(q);
   return querySnapshot.size;
+};
+
+// Savings Goals
+export interface SavingsGoal {
+  id?: string;
+  userId: string;
+  name: string;
+  targetAmount: number;
+  currentAmount: number;
+  icon: string;
+  color: string;
+  deadline?: string;
+  status: "active" | "completed";
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+}
+
+export const savingsGoalsCollection = (userId: string) =>
+  collection(db, "users", userId, "savingsGoals");
+
+export const subscribeToSavingsGoals = (
+  userId: string,
+  callback: (goals: SavingsGoal[]) => void
+) => {
+  const q = query(
+    savingsGoalsCollection(userId),
+    orderBy("createdAt", "desc")
+  );
+  return onSnapshot(q, (snapshot) => {
+    const goals = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    })) as SavingsGoal[];
+    callback(goals);
+  });
+};
+
+export const addSavingsGoal = async (
+  userId: string,
+  goal: Omit<SavingsGoal, "id" | "userId" | "createdAt" | "updatedAt">
+): Promise<string> => {
+  const goalData: any = {
+    userId,
+    name: goal.name,
+    targetAmount: Number(goal.targetAmount),
+    currentAmount: Number(goal.currentAmount || 0),
+    icon: goal.icon || "🎯",
+    color: goal.color || "#10B981",
+    status: goal.status || "active",
+    createdAt: Timestamp.now(),
+    updatedAt: Timestamp.now(),
+  };
+
+  if (goal.deadline) {
+    goalData.deadline = goal.deadline;
+  }
+
+  const docRef = await addDoc(savingsGoalsCollection(userId), goalData);
+  return docRef.id;
+};
+
+export const updateSavingsGoal = async (
+  userId: string,
+  goalId: string,
+  updates: Partial<SavingsGoal>
+): Promise<void> => {
+  const goalRef = doc(db, "users", userId, "savingsGoals", goalId);
+
+  const updateData: any = {
+    updatedAt: Timestamp.now(),
+  };
+
+  if (updates.name !== undefined) updateData.name = updates.name;
+  if (updates.targetAmount !== undefined) updateData.targetAmount = Number(updates.targetAmount);
+  if (updates.currentAmount !== undefined) updateData.currentAmount = Number(updates.currentAmount);
+  if (updates.icon !== undefined) updateData.icon = updates.icon;
+  if (updates.color !== undefined) updateData.color = updates.color;
+  if (updates.deadline !== undefined) updateData.deadline = updates.deadline;
+  if (updates.status !== undefined) updateData.status = updates.status;
+
+  await updateDoc(goalRef, updateData);
+};
+
+export const deleteSavingsGoal = async (
+  userId: string,
+  goalId: string
+): Promise<void> => {
+  const goalRef = doc(db, "users", userId, "savingsGoals", goalId);
+  await deleteDoc(goalRef);
+};
+
+export const addFundsToGoal = async (
+  userId: string,
+  goalId: string,
+  amount: number
+): Promise<void> => {
+  const goalRef = doc(db, "users", userId, "savingsGoals", goalId);
+  const goalSnap = await getDoc(goalRef);
+
+  if (goalSnap.exists()) {
+    const currentAmount = goalSnap.data().currentAmount || 0;
+    const targetAmount = goalSnap.data().targetAmount || 0;
+    const newAmount = currentAmount + amount;
+
+    await updateDoc(goalRef, {
+      currentAmount: newAmount,
+      status: newAmount >= targetAmount ? "completed" : "active",
+      updatedAt: Timestamp.now(),
+    });
+  }
+};
+
+
+// Expense Groups (Split Mode)
+export interface ExpenseGroup {
+  id?: string;
+  userId: string; // The creator/owner
+  name: string;
+  description?: string;
+  members: string[]; // List of names for simplicity (e.g. ["Me", "Alice", "Bob"])
+  currency: string;
+  totalSpent: number;
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+}
+
+export interface GroupExpense {
+  id?: string;
+  groupId: string;
+  description: string;
+  amount: number;
+  paidBy: string; // One of the members
+  splitWith?: string[]; // Optional: if empty/undefined, split equally among all group members
+  date: Timestamp | Date;
+  createdAt?: Timestamp;
+}
+
+export const expenseGroupsCollection = (userId: string) =>
+  collection(db, "users", userId, "expenseGroups");
+
+export const groupExpensesCollection = (userId: string, groupId: string) =>
+  collection(db, "users", userId, "expenseGroups", groupId, "expenses");
+
+// Group Operations
+export const subscribeToExpenseGroups = (
+  userId: string,
+  callback: (groups: ExpenseGroup[]) => void
+) => {
+  const q = query(
+    expenseGroupsCollection(userId),
+    orderBy("updatedAt", "desc")
+  );
+  return onSnapshot(q, (snapshot) => {
+    const groups = snapshot.docs.map((doc) => ({
+      id: doc.id,
+      ...doc.data(),
+    })) as ExpenseGroup[];
+    callback(groups);
+  });
+};
+
+export const addExpenseGroup = async (
+  userId: string,
+  group: Omit<ExpenseGroup, "id" | "userId" | "createdAt" | "updatedAt">
+): Promise<string> => {
+  const groupData: any = {
+    userId,
+    name: group.name,
+    description: group.description || "",
+    members: group.members,
+    currency: group.currency || "INR",
+    totalSpent: 0,
+    createdAt: Timestamp.now(),
+    updatedAt: Timestamp.now(),
+  };
+
+  const docRef = await addDoc(expenseGroupsCollection(userId), groupData);
+  return docRef.id;
+};
+
+export const updateExpenseGroup = async (
+  userId: string,
+  groupId: string,
+  updates: Partial<ExpenseGroup>
+): Promise<void> => {
+  const groupRef = doc(db, "users", userId, "expenseGroups", groupId);
+
+  const updateData: any = {
+    updatedAt: Timestamp.now(),
+  };
+
+  if (updates.name !== undefined) updateData.name = updates.name;
+  if (updates.members !== undefined) updateData.members = updates.members;
+  if (updates.totalSpent !== undefined) updateData.totalSpent = updates.totalSpent;
+
+  await updateDoc(groupRef, updateData);
+};
+
+export const deleteExpenseGroup = async (
+  userId: string,
+  groupId: string
+): Promise<void> => {
+  const groupRef = doc(db, "users", userId, "expenseGroups", groupId);
+  await deleteDoc(groupRef);
+};
+
+// Expense Operations
+export const subscribeToGroupExpenses = (
+  userId: string,
+  groupId: string,
+  callback: (expenses: GroupExpense[]) => void
+) => {
+  const q = query(
+    groupExpensesCollection(userId, groupId),
+    orderBy("date", "desc")
+  );
+  return onSnapshot(q, (snapshot) => {
+    const expenses = snapshot.docs.map((doc) => {
+      const data = doc.data();
+      return {
+        id: doc.id,
+        ...data,
+        date: data.date?.toDate ? data.date.toDate() : (data.date instanceof Date ? data.date : new Date()),
+      };
+    }) as GroupExpense[];
+    callback(expenses);
+  });
+};
+
+export const addGroupExpense = async (
+  userId: string,
+  groupId: string,
+  expense: Omit<GroupExpense, "id" | "groupId" | "createdAt">
+): Promise<string> => {
+  // Add expense
+  const expenseData: any = {
+    groupId,
+    description: expense.description,
+    amount: Number(expense.amount),
+    paidBy: expense.paidBy,
+    date: expense.date instanceof Date ? Timestamp.fromDate(expense.date) : expense.date,
+    createdAt: Timestamp.now(),
+  };
+
+  if (expense.splitWith) {
+    expenseData.splitWith = expense.splitWith;
+  }
+
+  const expenseRef = await addDoc(groupExpensesCollection(userId, groupId), expenseData);
+
+  // Update group total
+  const groupRef = doc(db, "users", userId, "expenseGroups", groupId);
+  const groupSnap = await getDoc(groupRef);
+  if (groupSnap.exists()) {
+    const currentTotal = groupSnap.data().totalSpent || 0;
+    await updateDoc(groupRef, {
+      totalSpent: currentTotal + expenseData.amount,
+      updatedAt: Timestamp.now(),
+    });
+  }
+
+  return expenseRef.id;
+};
+
+export const deleteGroupExpense = async (
+  userId: string,
+  groupId: string,
+  expenseId: string,
+  amount: number
+): Promise<void> => {
+  // Delete expense
+  const expenseRef = doc(db, "users", userId, "expenseGroups", groupId, "expenses", expenseId);
+  await deleteDoc(expenseRef);
+
+  // Update group total
+  const groupRef = doc(db, "users", userId, "expenseGroups", groupId);
+  const groupSnap = await getDoc(groupRef);
+  if (groupSnap.exists()) {
+    const currentTotal = groupSnap.data().totalSpent || 0;
+    await updateDoc(groupRef, {
+      totalSpent: Math.max(0, currentTotal - amount),
+      updatedAt: Timestamp.now(),
+    });
+  }
 };
 

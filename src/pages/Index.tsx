@@ -12,6 +12,8 @@ import { AddTransaction } from "@/components/AddTransaction";
 import { BillScanner } from "@/components/BillScanner";
 import { VoiceTransaction } from "@/components/VoiceTransaction";
 import { RecurringPayments } from "@/components/RecurringPayments";
+import { SavingsGoals } from "@/components/SavingsGoals";
+import { SplitGroups } from "@/components/SplitGroups";
 import { SettingsProfile } from "@/components/SettingsProfile";
 import { BottomNav } from "@/components/BottomNav";
 import { Preloader } from "@/components/Preloader";
@@ -52,7 +54,7 @@ const Index = () => {
   const handleOnboardingComplete = () => {
     try {
       localStorage.setItem("finora-onboarding-complete", "true");
-    } catch {}
+    } catch { }
     setShowOnboarding(false);
   };
 
@@ -96,6 +98,10 @@ const Index = () => {
         return <Transactions onBack={() => setActiveTab("home")} />;
       case "recurring":
         return <RecurringPayments />;
+      case "savings":
+        return <SavingsGoals />;
+      case "split":
+        return <SplitGroups />;
       case "settings":
         return <SettingsProfile onLogout={handleLogout} />;
       default:

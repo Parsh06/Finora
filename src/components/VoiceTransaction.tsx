@@ -1,20 +1,17 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { 
-  Mic, 
-  X, 
-  Check, 
-  Edit2,
+import {
+  Mic,
+  X,
+  Check,
   AlertCircle,
   IndianRupee,
+  Loader2,
   Calendar,
-  Building2,
-  FileText,
-  CreditCard,
-  Loader2
+  Clock
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { addTransaction } from "@/lib/firestore";
+import { addTransaction, subscribeToCategories, Category } from "@/lib/firestore";
 import { toast } from "sonner";
 import { format, parseISO } from "date-fns";
 
@@ -29,45 +26,9 @@ interface ExtractedTransaction {
   category: string;
   description: string;
   paymentMethod?: string;
-  date: string; // ISO date string
+  date: string; // ISO date string YYYY-MM-DD
+  time?: string; // HH:mm
 }
-
-const categoryLabels: Record<string, string> = {
-  food: "Food",
-  transport: "Transport",
-  shopping: "Shopping",
-  entertainment: "Entertainment",
-  bills: "Bills",
-  health: "Health",
-  education: "Education",
-  other: "Other",
-  salary: "Salary",
-  freelance: "Freelance",
-  business: "Business",
-  investment: "Investment",
-  gift: "Gift",
-  refund: "Refund",
-  bonus: "Bonus",
-};
-
-// Map category labels back to keys
-const categoryKeys: Record<string, string> = {
-  "Food": "food",
-  "Transport": "transport",
-  "Shopping": "shopping",
-  "Entertainment": "entertainment",
-  "Bills": "bills",
-  "Health": "health",
-  "Education": "education",
-  "Other": "other",
-  "Salary": "salary",
-  "Freelance": "freelance",
-  "Business": "business",
-  "Investment": "investment",
-  "Gift": "gift",
-  "Refund": "refund",
-  "Bonus": "bonus",
-};
 
 export const VoiceTransaction = ({ isOpen, onClose }: VoiceTransactionProps) => {
   const { currentUser } = useAuth();
@@ -78,10 +39,24 @@ export const VoiceTransaction = ({ isOpen, onClose }: VoiceTransactionProps) => 
   const [error, setError] = useState<string>("");
   const [isRecording, setIsRecording] = useState(false);
   const [permissionDenied, setPermissionDenied] = useState(false);
-  
+  const [categories, setCategories] = useState<Category[]>([]);
+
   const recognitionRef = useRef<SpeechRecognition | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
+
+  // Subscribe to categories
+  useEffect(() => {
+    if (!currentUser) return;
+    const unsubscribe = subscribeToCategories(currentUser.uid, (data) => {
+      setCategories(data);
+    });
+    return () => unsubscribe();
+  }, [currentUser]);
+
+  // Derive filtered categories based on selected type
+  const filteredCategories = useMemo(() => {
+    if (!extractedData) return [];
+    return categories.filter(c => c.type === extractedData.type && c.isActive);
+  }, [categories, extractedData?.type]);
 
   // Initialize Speech Recognition
   useEffect(() => {
@@ -89,7 +64,7 @@ export const VoiceTransaction = ({ isOpen, onClose }: VoiceTransactionProps) => 
 
     // Check for browser support
     const SpeechRecognition = window.SpeechRecognition || (window as any).webkitSpeechRecognition;
-    
+
     if (!SpeechRecognition) {
       setError("Speech recognition is not supported in your browser. Please use Chrome or Edge.");
       return;
@@ -154,10 +129,10 @@ export const VoiceTransaction = ({ isOpen, onClose }: VoiceTransactionProps) => 
     try {
       // Normalize the transcript
       const normalizedText = normalizeTranscript(text);
-      
+
       // Extract transaction data using AI
       const extracted = await extractTransactionData(normalizedText);
-      
+
       setExtractedData(extracted);
       setStage("confirm");
       setIsProcessing(false);
@@ -179,72 +154,63 @@ export const VoiceTransaction = ({ isOpen, onClose }: VoiceTransactionProps) => 
       .replace(/rs\s*(\d+)/gi, "rs $1")
       .replace(/(\d+)\s*rupees?/gi, "rs $1");
 
-    // Normalize common words
-    normalized = normalized
-      .replace(/paid for/gi, "paid")
-      .replace(/bought/gi, "purchased")
-      .replace(/spent on/gi, "spent");
-
     return normalized.trim();
   };
 
   const extractTransactionData = async (text: string): Promise<ExtractedTransaction> => {
     const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.VITE_GOOGLE_GENAI_API_KEY;
-    
+
     if (!GEMINI_API_KEY) {
       throw new Error("Gemini API key is not configured.");
     }
 
+    // Get list of category names to help AI
+    const expenseCategories = categories.filter(c => c.type === "expense" && c.isActive).map(c => c.name).join(", ");
+    const incomeCategories = categories.filter(c => c.type === "income" && c.isActive).map(c => c.name).join(", ");
+
+    const now = new Date();
+    const dateStr = format(now, "yyyy-MM-dd");
+    const timeStr = format(now, "HH:mm");
+
     const prompt = `You are a finance assistant AI. Analyze the user's spoken sentence and extract structured transaction data.
+Current Date: ${dateStr}
+Current Time: ${timeStr}
 
 User said: "${text}"
 
-Extract the following information:
-1. Type: "expense" or "income" (default to expense unless clearly income)
-2. Amount: numeric value only (extract from "rs X", "X rupees", "₹X", etc.)
-3. Category: one of: food, transport, shopping, entertainment, bills, health, education, other, salary, freelance, business, investment, gift, refund, bonus
-4. Description: brief description of the transaction
-5. Payment Method: "cash", "card", "upi", "online", or null if not mentioned
-6. Date: use today's date in YYYY-MM-DD format: ${new Date().toISOString().split("T")[0]}
+Available Categories:
+- Expense: ${expenseCategories}
+- Income: ${incomeCategories}
 
-Rules:
-- If amount not found, throw error
-- If multiple amounts mentioned, use the most relevant one
-- Category should match common expense/income types
-- Description should be concise (max 50 chars)
-- Default to expense if unclear
+Instructions:
+1. Determine if it's "expense" or "income".
+2. Extract the amount.
+3. Match the category from the available lists above. If no match, use "Other".
+4. Determine the date and time mentioned. Handle relative terms like "yesterday", "last night", "today at 5pm". 
+   - CRITICAL: If no specific time is mentioned, use the "Current Time" provided above (${timeStr}).
+   - If "current time" or "now" is implied, use ${timeStr}.
+5. Extract a brief description.
 
-Return ONLY valid JSON in this format:
+Return JSON in this format:
 {
   "type": "expense" | "income",
   "amount": number,
   "category": string,
   "description": string,
   "paymentMethod": string | null,
-  "date": "YYYY-MM-DD"
+  "date": "YYYY-MM-DD",
+  "time": "HH:mm"
 }`;
 
     const response = await fetch(
       `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${GEMINI_API_KEY}`,
       {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                {
-                  text: prompt,
-                },
-              ],
-            },
-          ],
+          contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
             temperature: 0.1,
-            topK: 32,
-            topP: 1,
             maxOutputTokens: 1024,
             responseMimeType: "application/json",
           },
@@ -253,47 +219,52 @@ Return ONLY valid JSON in this format:
     );
 
     if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(`AI analysis failed: ${errorData.error?.message || response.statusText}`);
+      throw new Error("AI analysis failed.");
     }
 
     const data = await response.json();
     const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text;
 
-    if (!responseText) {
-      throw new Error("No response from AI");
-    }
+    if (!responseText) throw new Error("No response from AI");
 
-    // Parse JSON response
     let parsed: any;
     try {
+      parsed = JSON.parse(responseText);
+    } catch {
+      // Try to clean markdown
       const jsonMatch = responseText.match(/\{[\s\S]*\}/);
       parsed = JSON.parse(jsonMatch ? jsonMatch[0] : responseText);
-    } catch (parseError) {
-      console.error("Failed to parse AI response:", responseText);
-      throw new Error("Failed to parse transaction data");
     }
 
-    // Validate extracted data
     if (!parsed.amount || parsed.amount <= 0) {
-      throw new Error("Could not extract a valid amount. Please mention the amount clearly.");
+      throw new Error("Could not extract a valid amount.");
     }
 
-    if (!parsed.category) {
-      parsed.category = "other";
-    }
+    // Validate category exists in our list (case insensitive check)
+    // If not found, default to "Other" or keep AI's guess if we want to allow new ones (but user asked for backend match)
+    // Here we try to find a case-insensitive match from our list
+    let finalCategory = parsed.category;
+    const allCats = categories.filter(c => c.type === (parsed.type || "expense"));
+    const match = allCats.find(c => c.name.toLowerCase() === parsed.category.toLowerCase());
 
-    if (!parsed.description) {
-      parsed.description = "Voice transaction";
+    if (match) {
+      finalCategory = match.name;
+    } else {
+      // If no exact match, fallback to "Other" or the closest one?
+      // For now, let's look for "Other" in the list, otherwise keep what AI said (maybe user spoke a new one?)
+      // But user request was "fill it under others allowing user to change"
+      const otherCat = allCats.find(c => c.name.toLowerCase() === "other");
+      finalCategory = otherCat ? otherCat.name : (match?.name || "Other");
     }
 
     return {
       type: parsed.type || "expense",
       amount: Number(parsed.amount),
-      category: parsed.category.toLowerCase(),
-      description: parsed.description,
+      category: finalCategory, // Normalized name
+      description: parsed.description || "Voice transaction",
       paymentMethod: parsed.paymentMethod || undefined,
-      date: parsed.date || new Date().toISOString().split("T")[0],
+      date: parsed.date || now.toISOString().split("T")[0],
+      time: parsed.time || format(now, "HH:mm"),
     };
   };
 
@@ -315,9 +286,7 @@ Return ONLY valid JSON in this format:
       console.error("Error starting recognition:", error);
       if (error.message?.includes("already started")) {
         recognitionRef.current.stop();
-        setTimeout(() => {
-          recognitionRef.current?.start();
-        }, 100);
+        setTimeout(() => recognitionRef.current?.start(), 100);
       } else {
         setError("Failed to start listening. Please try again.");
         setIsRecording(false);
@@ -335,24 +304,7 @@ Return ONLY valid JSON in this format:
 
   const handleFieldEdit = (field: keyof ExtractedTransaction, value: any) => {
     if (!extractedData) return;
-
-    const updated = { ...extractedData };
-    
-    if (field === "amount") {
-      updated.amount = Number(value) || 0;
-    } else if (field === "type") {
-      updated.type = value as "expense" | "income";
-    } else if (field === "category") {
-      updated.category = categoryKeys[value] || value.toLowerCase();
-    } else if (field === "description") {
-      updated.description = value;
-    } else if (field === "paymentMethod") {
-      updated.paymentMethod = value || undefined;
-    } else if (field === "date") {
-      updated.date = value;
-    }
-
-    setExtractedData(updated);
+    setExtractedData({ ...extractedData, [field]: value });
   };
 
   const handleConfirm = async () => {
@@ -369,15 +321,12 @@ Return ONLY valid JSON in this format:
     setIsProcessing(true);
 
     try {
-      const transactionDate = parseISO(extractedData.date);
-      if (isNaN(transactionDate.getTime())) {
-        transactionDate.setTime(Date.now());
-      }
-      transactionDate.setHours(0, 0, 0, 0);
+      // Construct Date object from date and time components
+      const transactionDate = parseISO(`${extractedData.date}T${extractedData.time || "00:00"}`);
 
       const transactionData: any = {
         title: extractedData.description,
-        category: extractedData.category,
+        category: extractedData.category.toLowerCase(), // Store as lowercase for key consistency if needed, or stick to Display Name
         amount: extractedData.amount,
         type: extractedData.type,
         date: transactionDate,
@@ -390,9 +339,7 @@ Return ONLY valid JSON in this format:
 
       await addTransaction(currentUser.uid, transactionData);
 
-      toast.success(
-        `${extractedData.type === "income" ? "Income" : "Expense"} of ₹${extractedData.amount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} added successfully!`
-      );
+      toast.success("Transaction added successfully!");
 
       setTimeout(() => {
         resetAndClose();
@@ -494,9 +441,9 @@ Return ONLY valid JSON in this format:
                           {isRecording ? "Listening..." : "Tap to speak"}
                         </p>
                         <p className="text-sm text-muted-foreground">
-                          {isRecording 
+                          {isRecording
                             ? "Speak your transaction clearly"
-                            : "Say something like 'I paid 500 rupees for lunch'"
+                            : "Say something like 'I paid 500 rupees for lunch yesterday'"
                           }
                         </p>
                       </div>
@@ -543,11 +490,10 @@ Return ONLY valid JSON in this format:
                       <button
                         onClick={isRecording ? stopListening : startListening}
                         disabled={isProcessing || permissionDenied}
-                        className={`w-full py-4 sm:py-5 rounded-xl font-semibold text-lg transition-all ${
-                          isRecording
-                            ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                            : "bg-success text-success-foreground hover:bg-success/90"
-                        } disabled:opacity-50 disabled:cursor-not-allowed`}
+                        className={`w-full py-4 sm:py-5 rounded-xl font-semibold text-lg transition-all ${isRecording
+                          ? "bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                          : "bg-success text-success-foreground hover:bg-success/90"
+                          } disabled:opacity-50 disabled:cursor-not-allowed`}
                       >
                         {isRecording ? "Stop Recording" : "Start Recording"}
                       </button>
@@ -611,21 +557,19 @@ Return ONLY valid JSON in this format:
                         <div className="flex gap-2">
                           <button
                             onClick={() => handleFieldEdit("type", "expense")}
-                            className={`flex-1 py-2 rounded-lg font-medium transition-colors ${
-                              extractedData.type === "expense"
-                                ? "bg-destructive text-destructive-foreground"
-                                : "bg-muted text-muted-foreground"
-                            }`}
+                            className={`flex-1 py-2 rounded-lg font-medium transition-colors ${extractedData.type === "expense"
+                              ? "bg-destructive text-destructive-foreground"
+                              : "bg-muted text-muted-foreground"
+                              }`}
                           >
                             Expense
                           </button>
                           <button
                             onClick={() => handleFieldEdit("type", "income")}
-                            className={`flex-1 py-2 rounded-lg font-medium transition-colors ${
-                              extractedData.type === "income"
-                                ? "bg-success text-success-foreground"
-                                : "bg-muted text-muted-foreground"
-                            }`}
+                            className={`flex-1 py-2 rounded-lg font-medium transition-colors ${extractedData.type === "income"
+                              ? "bg-success text-success-foreground"
+                              : "bg-muted text-muted-foreground"
+                              }`}
                           >
                             Income
                           </button>
@@ -634,18 +578,53 @@ Return ONLY valid JSON in this format:
 
                       {/* Category */}
                       <div className="p-4 rounded-xl bg-muted/20 border border-border/50">
-                        <p className="text-xs text-muted-foreground mb-2">Category</p>
+                        <p className="text-xs text-muted-foreground mb-2">Category ({extractedData.type})</p>
                         <select
-                          value={categoryLabels[extractedData.category] || extractedData.category}
+                          value={extractedData.category}
                           onChange={(e) => handleFieldEdit("category", e.target.value)}
                           className="w-full bg-background border border-primary/50 rounded-lg px-3 py-2 font-medium focus:outline-none focus:ring-2 focus:ring-primary/50"
                         >
-                          {Object.entries(categoryLabels).map(([key, label]) => (
-                            <option key={key} value={label}>
-                              {label}
-                            </option>
-                          ))}
+                          {filteredCategories.length > 0 ? (
+                            filteredCategories.map((cat) => (
+                              <option key={cat.id} value={cat.name}>
+                                {cat.name} {cat.type !== extractedData.type ? `(${cat.type})` : ""}
+                              </option>
+                            ))
+                          ) : (
+                            <option value="other">Other</option>
+                          )}
                         </select>
+                      </div>
+
+                      {/* Date & Time (New) */}
+                      <div className="p-4 rounded-xl bg-muted/20 border border-border/50">
+                        <p className="text-xs text-muted-foreground mb-2">Date & Time</p>
+                        <div className="flex gap-2">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <Calendar className="w-3 h-3 text-muted-foreground" />
+                              <span className="text-[10px] text-muted-foreground">Date</span>
+                            </div>
+                            <input
+                              type="date"
+                              value={extractedData.date}
+                              onChange={(e) => handleFieldEdit("date", e.target.value)}
+                              className="w-full bg-background border border-primary/50 rounded-lg px-3 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-primary/50"
+                            />
+                          </div>
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-1">
+                              <Clock className="w-3 h-3 text-muted-foreground" />
+                              <span className="text-[10px] text-muted-foreground">Time</span>
+                            </div>
+                            <input
+                              type="time"
+                              value={extractedData.time}
+                              onChange={(e) => handleFieldEdit("time", e.target.value)}
+                              className="w-full bg-background border border-primary/50 rounded-lg px-3 py-2 text-sm font-medium focus:outline-none focus:ring-2 focus:ring-primary/50"
+                            />
+                          </div>
+                        </div>
                       </div>
 
                       {/* Description */}
@@ -709,4 +688,3 @@ Return ONLY valid JSON in this format:
     </AnimatePresence>
   );
 };
-

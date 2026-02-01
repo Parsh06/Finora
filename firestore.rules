@@ -60,6 +60,36 @@ service cloud.firestore {
                       resource.data.userId == userId;
         allow delete: if isOwner(userId) && resource.data.userId == userId;
       }
+
+      // NEW: Savings Goals
+      match /savingsGoals/{goalId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && hasValidUserId(userId);
+        allow update: if isOwner(userId) && 
+                      request.resource.data.userId == userId &&
+                      resource.data.userId == userId;
+        allow delete: if isOwner(userId) && resource.data.userId == userId;
+      }
+
+      // NEW: Expense Groups (Split Mode)
+      match /expenseGroups/{groupId} {
+        allow read: if isOwner(userId);
+        allow create: if isOwner(userId) && hasValidUserId(userId);
+        allow update: if isOwner(userId) && 
+                      request.resource.data.userId == userId &&
+                      resource.data.userId == userId;
+        allow delete: if isOwner(userId) && resource.data.userId == userId;
+
+        // Subcollection: Group Expenses
+        match /expenses/{expenseId} {
+            // Expenses don't explicitly store userId, but they are nested under users/{userId}
+            // so isOwner(userId) is sufficient and secure.
+            allow read: if isOwner(userId);
+            allow create: if isOwner(userId);
+            allow update: if isOwner(userId);
+            allow delete: if isOwner(userId);
+        }
+      }
     }
   }
 }

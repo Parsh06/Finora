@@ -1,12 +1,13 @@
 import { motion } from "framer-motion";
 import { useState, useEffect } from "react";
-import { TrendingUp, TrendingDown, Wallet, PiggyBank, Sparkles, Scan, Target, RefreshCw, Mic, Trash2 } from "lucide-react";
+import { TrendingUp, TrendingDown, Wallet, PiggyBank, Sparkles, Scan, Target, RefreshCw, Mic, Trash2, Eye, EyeOff, Users, BarChart3 } from "lucide-react";
 import { FinoraLogo } from "./FinoraLogo";
 import { useAuth } from "@/contexts/AuthContext";
 import { subscribeToTransactions, Transaction, deleteTransaction } from "@/lib/firestore";
 import { format, isToday, isYesterday, differenceInDays, startOfYear, endOfYear, startOfMonth, endOfMonth, startOfDay, endOfDay } from "date-fns";
 import { DateFilter, DateFilterState } from "./DateFilter";
 import { toast } from "sonner";
+import { usePrivacy } from "@/contexts/PrivacyContext";
 
 interface DashboardProps {
   onNavigate?: (tab: string) => void;
@@ -36,6 +37,7 @@ const categoryIcons: Record<string, string> = {
 
 export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: DashboardProps) => {
   const { currentUser, userProfile } = useAuth();
+  const { isPrivacyEnabled, togglePrivacy } = usePrivacy();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [dateFilter, setDateFilter] = useState<DateFilterState>({ mode: "all" });
@@ -43,23 +45,35 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
   useEffect(() => {
     if (!currentUser) return;
 
+    // Remove limit to get all transactions for accurate totals
     const unsubscribe = subscribeToTransactions(currentUser.uid, (data) => {
       console.log("📊 Dashboard: Received transactions:", data.length);
-      console.log("📊 Dashboard: Transaction IDs:", data.map(t => t.id));
       setTransactions(data);
       setLoading(false);
-    }, 10); // Get last 10 transactions
+    });
 
     return () => unsubscribe();
   }, [currentUser]);
 
   // Calculate stats from transactions
   const now = new Date();
-  
-  // Filter transactions based on date filter
+
+  // Calculate All-Time Stats
+  const allTimeIncome = transactions
+    .filter((t) => t.type === "income")
+    .reduce((sum, t) => sum + t.amount, 0);
+
+  const allTimeExpense = transactions
+    .filter((t) => t.type === "expense")
+    .reduce((sum, t) => sum + t.amount, 0);
+
+  const totalBalance = allTimeIncome - allTimeExpense;
+
+  // Filter transactions based on date filter for the list/graphs if needed
+  // For the main balance cards, we use all-time stats as requested
   const filteredTransactions = transactions.filter((t) => {
     const date = t.date instanceof Date ? t.date : t.date.toDate();
-    
+
     if (dateFilter.mode === "year" && dateFilter.year !== undefined) {
       const yearStart = startOfYear(new Date(dateFilter.year, 0, 1));
       const yearEnd = endOfYear(new Date(dateFilter.year, 11, 31));
@@ -73,30 +87,21 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
       const dayEnd = endOfDay(new Date(dateFilter.year, dateFilter.month, dateFilter.day));
       return date >= dayStart && date <= dayEnd;
     }
-    
+
     // Default: show current month
     const startOfCurrentMonth = new Date(now.getFullYear(), now.getMonth(), 1);
     return date >= startOfCurrentMonth;
   });
 
-  const monthlyTransactions = filteredTransactions;
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const todayTransactions = filteredTransactions.filter((t) => {
+  const todayTransactions = transactions.filter((t) => {
     const date = t.date instanceof Date ? t.date : t.date.toDate();
     return date >= startOfToday;
   });
 
-  const monthlyIncome = monthlyTransactions
-    .filter((t) => t.type === "income")
-    .reduce((sum, t) => sum + t.amount, 0);
-
-  const monthlyExpense = monthlyTransactions
-    .filter((t) => t.type === "expense")
-    .reduce((sum, t) => sum + t.amount, 0);
-
   const handleDeleteTransaction = async (transactionId: string, transactionTitle: string) => {
     if (!currentUser) return;
-    
+
     if (!confirm(`Are you sure you want to delete "${transactionTitle}"?`)) {
       return;
     }
@@ -114,11 +119,51 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
     .filter((t) => t.type === "expense")
     .reduce((sum, t) => sum + t.amount, 0);
 
-  const monthlySavings = monthlyIncome - monthlyExpense;
-  
-  // Calculate total balance (assuming starting balance + all income - all expenses)
-  // For now, we'll use monthly income as a proxy
-  const totalBalance = monthlyIncome - monthlyExpense;
+  // Calculate savings based on filter
+  let savingsValue = 0;
+  let savingsLabel = "Monthly Savings";
+
+  if (dateFilter.mode === "month" && dateFilter.year !== undefined && dateFilter.month !== undefined) {
+    const monthStart = startOfMonth(new Date(dateFilter.year, dateFilter.month, 1));
+    const monthEnd = endOfMonth(new Date(dateFilter.year, dateFilter.month, 1));
+
+    const monthTransactions = transactions.filter(t => {
+      const date = t.date instanceof Date ? t.date : t.date.toDate();
+      return date >= monthStart && date <= monthEnd;
+    });
+
+    const income = monthTransactions.filter(t => t.type === "income").reduce((sum, t) => sum + t.amount, 0);
+    const expense = monthTransactions.filter(t => t.type === "expense").reduce((sum, t) => sum + t.amount, 0);
+
+    savingsValue = income - expense;
+    savingsLabel = `${format(monthStart, "MMMM")} Savings`;
+  } else if (dateFilter.mode === "year" && dateFilter.year !== undefined) {
+    const yearStart = startOfYear(new Date(dateFilter.year, 0, 1));
+    const yearEnd = endOfYear(new Date(dateFilter.year, 11, 31));
+
+    const yearTransactions = transactions.filter(t => {
+      const date = t.date instanceof Date ? t.date : t.date.toDate();
+      return date >= yearStart && date <= yearEnd;
+    });
+
+    const income = yearTransactions.filter(t => t.type === "income").reduce((sum, t) => sum + t.amount, 0);
+    const expense = yearTransactions.filter(t => t.type === "expense").reduce((sum, t) => sum + t.amount, 0);
+
+    savingsValue = income - expense;
+    savingsLabel = `${dateFilter.year} Savings`;
+  } else {
+    // Default to current month
+    const currentMonthTransactions = transactions.filter(t => {
+      const date = t.date instanceof Date ? t.date : t.date.toDate();
+      return date >= startOfMonth(now) && date <= endOfMonth(now);
+    });
+
+    const income = currentMonthTransactions.filter(t => t.type === "income").reduce((sum, t) => sum + t.amount, 0);
+    const expense = currentMonthTransactions.filter(t => t.type === "expense").reduce((sum, t) => sum + t.amount, 0);
+
+    savingsValue = income - expense;
+    savingsLabel = "Monthly Savings";
+  }
 
   const formatDate = (date: Date | any): string => {
     const d = date instanceof Date ? date : date.toDate();
@@ -144,7 +189,7 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
     const startOfWeek = new Date(now);
     startOfWeek.setDate(now.getDate() - now.getDay());
     startOfWeek.setHours(0, 0, 0, 0);
-    
+
     const lastWeekStart = new Date(startOfWeek);
     lastWeekStart.setDate(startOfWeek.getDate() - 7);
     const lastWeekEnd = new Date(startOfWeek);
@@ -178,12 +223,12 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
 
     const change = ((thisWeekTotal - lastWeekTotal) / lastWeekTotal) * 100;
     const categorySpending: Record<string, number> = {};
-    
+
     thisWeekExpenses.forEach(e => {
       categorySpending[e.category] = (categorySpending[e.category] || 0) + e.amount;
     });
 
-    const topCategory = Object.entries(categorySpending).sort(([,a], [,b]) => b - a)[0];
+    const topCategory = Object.entries(categorySpending).sort(([, a], [, b]) => b - a)[0];
 
     if (Math.abs(change) < 5) {
       return {
@@ -207,6 +252,8 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
 
   const aiInsight = calculateAIInsight();
 
+  const blurClass = isPrivacyEnabled ? "blur-md select-none transition-all duration-300" : "transition-all duration-300";
+
   return (
     <div className="min-h-screen pb-24 bg-background">
       {/* Header */}
@@ -217,8 +264,21 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
             {userProfile?.name || currentUser?.displayName || "User"}
           </h1>
         </div>
-        <div className="flex-shrink-0 ml-2">
-          <FinoraLogo size={32} showText={false} />
+        <div className="flex items-center gap-3">
+          <button
+            onClick={togglePrivacy}
+            className="p-2 rounded-full bg-secondary hover:bg-muted transition-colors"
+            title={isPrivacyEnabled ? "Show Balance" : "Hide Balance"}
+          >
+            {isPrivacyEnabled ? (
+              <EyeOff className="w-5 h-5 text-muted-foreground" />
+            ) : (
+              <Eye className="w-5 h-5 text-muted-foreground" />
+            )}
+          </button>
+          <div className="flex-shrink-0 ml-2">
+            <FinoraLogo size={32} showText={false} />
+          </div>
         </div>
       </header>
 
@@ -239,8 +299,8 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
             style={{ background: "radial-gradient(circle, hsl(165, 80%, 45%) 0%, transparent 70%)" }}
           />
           <p className="text-muted-foreground text-xs sm:text-sm mb-1">Total Balance</p>
-          <h2 className="stat-value text-3xl sm:text-4xl mb-3 sm:mb-4 font-bold">₹{totalBalance.toLocaleString()}</h2>
-          
+          <h2 className={`stat-value text-3xl sm:text-4xl mb-3 sm:mb-4 font-bold ${blurClass}`}>₹{totalBalance.toLocaleString()}</h2>
+
           <div className="flex gap-3 sm:gap-4">
             <div className="flex items-center gap-2 flex-1 min-w-0">
               <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg bg-success/20 flex items-center justify-center flex-shrink-0">
@@ -248,7 +308,7 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
               </div>
               <div className="min-w-0">
                 <p className="text-xs text-muted-foreground">Income</p>
-                <p className="text-sm sm:text-base font-semibold text-success truncate">₹{monthlyIncome.toLocaleString()}</p>
+                <p className={`text-sm sm:text-base font-semibold text-success truncate ${blurClass}`}>₹{allTimeIncome.toLocaleString()}</p>
               </div>
             </div>
             <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -257,7 +317,7 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
               </div>
               <div className="min-w-0">
                 <p className="text-xs text-muted-foreground">Expense</p>
-                <p className="text-sm sm:text-base font-semibold text-destructive truncate">₹{monthlyExpense.toLocaleString()}</p>
+                <p className={`text-sm sm:text-base font-semibold text-destructive truncate ${blurClass}`}>₹{allTimeExpense.toLocaleString()}</p>
               </div>
             </div>
           </div>
@@ -277,15 +337,15 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
               <Wallet className="w-4 h-4 text-primary flex-shrink-0" />
               <span className="text-xs text-muted-foreground truncate">Today's Spend</span>
             </div>
-            <p className="text-lg sm:text-xl font-bold text-foreground">₹{todaySpend.toLocaleString()}</p>
+            <p className={`text-lg sm:text-xl font-bold text-foreground ${blurClass}`}>₹{todaySpend.toLocaleString()}</p>
           </div>
           <div className="glass-card p-3 sm:p-4 rounded-xl">
             <div className="flex items-center gap-2 mb-2">
               <PiggyBank className="w-4 h-4 text-success flex-shrink-0" />
-              <span className="text-xs text-muted-foreground truncate">Monthly Savings</span>
+              <span className="text-xs text-muted-foreground truncate">{savingsLabel}</span>
             </div>
-            <p className={`text-lg sm:text-xl font-bold ${monthlySavings >= 0 ? "text-success" : "text-destructive"}`}>
-              ₹{monthlySavings.toLocaleString()}
+            <p className={`text-lg sm:text-xl font-bold ${savingsValue >= 0 ? "text-success" : "text-destructive"} ${blurClass}`}>
+              ₹{savingsValue.toLocaleString()}
             </p>
           </div>
         </div>
@@ -299,7 +359,7 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
         className="px-4 sm:px-5 mb-4 sm:mb-6"
       >
         <div className="grid grid-cols-3 gap-2 sm:gap-3">
-          <button 
+          <button
             onClick={onScanBill}
             className="glass-card p-3 sm:p-4 flex flex-col items-center gap-2 hover:bg-muted/30 transition-colors rounded-xl active:scale-95"
           >
@@ -311,7 +371,8 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
               <p className="text-[10px] text-muted-foreground truncate">Auto-add</p>
             </div>
           </button>
-          <button 
+
+          <button
             onClick={onVoiceTransaction}
             className="glass-card p-3 sm:p-4 flex flex-col items-center gap-2 hover:bg-muted/30 transition-colors rounded-xl active:scale-95"
           >
@@ -323,7 +384,8 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
               <p className="text-[10px] text-muted-foreground truncate">Transaction</p>
             </div>
           </button>
-          <button 
+
+          <button
             onClick={() => onNavigate?.("budgets")}
             className="glass-card p-3 sm:p-4 flex flex-col items-center gap-2 hover:bg-muted/30 transition-colors rounded-xl active:scale-95"
           >
@@ -333,6 +395,45 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
             <div className="text-center min-w-0">
               <p className="font-medium text-foreground text-xs truncate">Budgets</p>
               <p className="text-[10px] text-muted-foreground truncate">Track goals</p>
+            </div>
+          </button>
+
+          <button
+            onClick={() => onNavigate?.("savings")}
+            className="glass-card p-3 sm:p-4 flex flex-col items-center gap-2 hover:bg-muted/30 transition-colors rounded-xl active:scale-95"
+          >
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-warning/20 flex items-center justify-center flex-shrink-0">
+              <PiggyBank className="w-4 h-4 sm:w-5 sm:h-5 text-warning" />
+            </div>
+            <div className="text-center min-w-0">
+              <p className="font-medium text-foreground text-xs truncate">Wishlist</p>
+              <p className="text-[10px] text-muted-foreground truncate">Save money</p>
+            </div>
+          </button>
+
+          <button
+            onClick={() => onNavigate?.("split")}
+            className="glass-card p-3 sm:p-4 flex flex-col items-center gap-2 hover:bg-muted/30 transition-colors rounded-xl active:scale-95"
+          >
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center flex-shrink-0">
+              <Users className="w-4 h-4 sm:w-5 sm:h-5 text-indigo-500" />
+            </div>
+            <div className="text-center min-w-0">
+              <p className="font-medium text-foreground text-xs truncate">Split Bill</p>
+              <p className="text-[10px] text-muted-foreground truncate">Trip Mode</p>
+            </div>
+          </button>
+
+          <button
+            onClick={() => onNavigate?.("analytics")}
+            className="glass-card p-3 sm:p-4 flex flex-col items-center gap-2 hover:bg-muted/30 transition-colors rounded-xl active:scale-95"
+          >
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-rose-500/20 flex items-center justify-center flex-shrink-0">
+              <BarChart3 className="w-4 h-4 sm:w-5 sm:h-5 text-rose-500" />
+            </div>
+            <div className="text-center min-w-0">
+              <p className="font-medium text-foreground text-xs truncate">Stats</p>
+              <p className="text-[10px] text-muted-foreground truncate">Insights</p>
             </div>
           </button>
         </div>
@@ -346,7 +447,7 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
           transition={{ delay: 0.35 }}
           className="px-4 sm:px-5 mb-4 sm:mb-6"
         >
-          <button 
+          <button
             onClick={() => onNavigate?.("insights")}
             className="w-full glass-card p-3 sm:p-4 text-left hover:bg-muted/30 transition-colors rounded-xl active:scale-95 border border-primary/10"
           >
@@ -356,11 +457,10 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
               </div>
               <div className="min-w-0 flex-1">
                 <p className="text-xs sm:text-sm font-semibold text-foreground mb-1">AI Insight</p>
-                <p className={`text-xs sm:text-sm leading-relaxed ${
-                  aiInsight.type === "warning" ? "text-warning" : 
-                  aiInsight.type === "success" ? "text-success" : 
-                  "text-muted-foreground"
-                }`}>
+                <p className={`text-xs sm:text-sm leading-relaxed ${aiInsight.type === "warning" ? "text-warning" :
+                  aiInsight.type === "success" ? "text-success" :
+                    "text-muted-foreground"
+                  }`}>
                   {aiInsight.text}
                 </p>
                 <p className="text-xs text-primary mt-1 font-medium">Tap for more insights →</p>
@@ -379,7 +479,7 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
       >
         <div className="flex items-center justify-between mb-3 sm:mb-4">
           <h3 className="font-semibold text-foreground text-sm sm:text-base">Recent Transactions</h3>
-          <button 
+          <button
             onClick={() => onNavigate?.("transactions")}
             className="text-xs sm:text-sm text-primary font-medium hover:underline"
           >
@@ -402,7 +502,7 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
             recentTransactions.map((transaction, index) => {
               const date = transaction.date instanceof Date ? transaction.date : transaction.date.toDate();
               const icon = categoryIcons[transaction.category.toLowerCase()] || categoryIcons.other;
-              
+
               return (
                 <motion.div
                   key={transaction.id}
@@ -431,9 +531,8 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
                     </div>
                   </div>
                   <div className="flex items-center gap-2 flex-shrink-0 ml-2">
-                    <p className={`font-semibold text-sm sm:text-base ${
-                      transaction.type === "income" ? "text-success" : "text-foreground"
-                    }`}>
+                    <p className={`font-semibold text-sm sm:text-base ${transaction.type === "income" ? "text-success" : "text-foreground"
+                      } ${blurClass}`}>
                       {transaction.type === "income" ? "+" : "-"}₹{transaction.amount.toLocaleString()}
                     </p>
                     {transaction.id && (
