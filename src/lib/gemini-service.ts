@@ -9,13 +9,24 @@
 
 const CONFIG = {
   apiKey: import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.VITE_GOOGLE_GENAI_API_KEY,
-  model: "gemini-3-flash-preview",
+  // Primary model to try first
+  defaultModel: "gemini-2.0-flash",
   maxFileSize: 20 * 1024 * 1024, // 20MB
   temperature: 0.1,
   maxOutputTokens: 1024,
+  maxRetries: 3, // Initial retry attempts for a single model
 } as const;
 
-const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${CONFIG.model}:generateContent`;
+// List of models to try in valid order
+// Based on available models: gemini-2.0-flash, gemini-2.5-flash, gemini-flash-latest
+const FALLBACK_MODELS = [
+  "gemini-2.0-flash",
+  "gemini-2.5-flash",
+  "gemini-flash-latest", // Likely maps to 1.5-flash
+  "gemini-2.0-flash-lite"
+];
+
+const GEMINI_BASE_URL = `https://generativelanguage.googleapis.com/v1beta/models`;
 
 // ============================================================================
 // TYPES
@@ -214,6 +225,11 @@ const calculateConfidence = (data: {
   return Math.min(Math.max(score, 50), 95);
 };
 
+/**
+ * Delay function for retries
+ */
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 // ============================================================================
 // PROMPT GENERATION
 // ============================================================================
@@ -252,34 +268,71 @@ Return JSON only, no markdown or explanations.`;
 // ============================================================================
 
 /**
- * Make API request to Gemini
+ * Make API request to Gemini with retry logic
  */
-const callGeminiApi = async (base64Image: string, mimeType: string, prompt: string): Promise<GeminiResponse> => {
-  const response = await fetch(`${GEMINI_API_URL}?key=${CONFIG.apiKey}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{
-        parts: [
-          { inlineData: { mimeType, data: base64Image } },
-          { text: prompt }
-        ]
-      }],
-      generationConfig: {
-        temperature: CONFIG.temperature,
-        topK: 32,
-        topP: 1,
-        maxOutputTokens: CONFIG.maxOutputTokens,
-        responseMimeType: "application/json",
-      },
-    }),
-  });
+const callGeminiApi = async (base64Image: string, mimeType: string, prompt: string, model: string): Promise<GeminiResponse> => {
+  const url = `${GEMINI_BASE_URL}/${model}:generateContent?key=${CONFIG.apiKey}`;
 
-  if (!response.ok) {
-    throw await handleApiError(response);
+  let retries = 0;
+  let lastError: Error | null = null;
+
+  while (retries <= CONFIG.maxRetries) {
+    try {
+      if (retries > 0) {
+        console.log(`Retrying... Attempt ${retries + 1}/${CONFIG.maxRetries + 1} for model ${model}`);
+        // Exponential backoff: 1s, 2s, 4s
+        await delay(1000 * Math.pow(2, retries - 1));
+      }
+
+      const response = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { inlineData: { mimeType, data: base64Image } },
+              { text: prompt }
+            ]
+          }],
+          generationConfig: {
+            temperature: CONFIG.temperature,
+            topK: 32,
+            topP: 1,
+            maxOutputTokens: CONFIG.maxOutputTokens,
+            responseMimeType: "application/json",
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        // If it's a 429 (Rate Limit) or 503 (Service Unavailable), retry
+        if ((response.status === 429 || response.status === 503) && retries < CONFIG.maxRetries) {
+          console.warn(`Hit ${response.status} error with ${model}. Retrying...`);
+          retries++;
+          continue;
+        }
+
+        // If it's 404, throwing immediately allows the fallback loop to try the next model
+        // If it's a fatal error (400, 401), we also throw
+        throw await handleApiError(response);
+      }
+
+      return response.json();
+
+    } catch (error: any) {
+      lastError = error;
+      // Only retry on network errors or specific API errors caught above that continued loop
+      // If the error was thrown by handleApiError (like 400 Bad Request), don't retry same model
+      if (!error.message.includes("Rate limit") && !error.message.includes("Service temporarily unavailable")) {
+        throw error;
+      }
+
+      retries++;
+      if (retries > CONFIG.maxRetries) break;
+    }
   }
 
-  return response.json();
+  throw lastError || new Error(`Failed to call Gemini API with model ${model}`);
 };
 
 /**
@@ -300,8 +353,10 @@ const handleApiError = async (response: Response): Promise<Error> => {
     400: `Invalid request: ${message}. Check your image format.`,
     401: `Authentication failed. Check your API key.`,
     403: `Authentication failed. Check your API key.`,
-    429: "Rate limit exceeded. Please try again in a moment.",
-    500: "Gemini API service temporarily unavailable. Try again later.",
+    404: `Model not found or not supported.`,
+    429: "Rate limit exceeded.",
+    500: "Gemini API service temporarily unavailable.",
+    503: "Gemini Service Overloaded.",
   };
 
   return new Error(errorMessages[status] || message);
@@ -381,12 +436,40 @@ export const scanBill = async (imageFile: File, userCategories?: string[]): Prom
     const base64Image = await imageToBase64(imageFile);
     const mimeType = getMimeType(imageFile);
 
-    // Generate prompt and call API
+    // Generate prompt
     const prompt = generatePrompt(userCategories);
-    const response = await callGeminiApi(base64Image, mimeType, prompt);
+
+    let lastError: Error | null = null;
+    let successfulResponse: GeminiResponse | undefined;
+
+    // Try each model in sequence for rate limit or fallback handling
+    // We already have internal retries for 429 per model, but if that exhaustion happens, next model is tried
+    for (const model of FALLBACK_MODELS) {
+      try {
+        console.log(`Trying Gemini model: ${model}`);
+        successfulResponse = await callGeminiApi(base64Image, mimeType, prompt, model);
+        if (successfulResponse) {
+          console.log(`✅ Success with model: ${model}`);
+          break;
+        }
+      } catch (error: any) {
+        console.warn(`Model ${model} failed:`, error.message);
+        lastError = error;
+
+        // If error is NOT a transient one (rate limit/404/500), and is instead a fatal auth/request error, abort immediately.
+        if (error.message.includes("Authentication") || error.message.includes("Invalid request")) {
+          throw error;
+        }
+        // Otherwise (429, 404, 503), continue to next fallback model
+      }
+    }
+
+    if (!successfulResponse) {
+      throw lastError || new Error("All AI models are currently busy or unavailable. Please try again later.");
+    }
 
     // Extract and parse response
-    const responseText = response.candidates?.[0]?.content?.parts?.[0]?.text;
+    const responseText = successfulResponse.candidates?.[0]?.content?.parts?.[0]?.text;
     if (!responseText) {
       throw new Error("No valid response from Gemini API. Please try again.");
     }
@@ -406,6 +489,8 @@ export const scanBill = async (imageFile: File, userCategories?: string[]): Prom
       throw new Error("Could not read the bill clearly. Ensure the image is clear, well-lit, and shows the full bill.");
     } else if (error.message.includes("size") || error.message.includes("20MB")) {
       throw error;
+    } else if (error.message.includes("Rate limit")) {
+      throw new Error("AI service is busy (Rate Limit). Please wait a moment and try again.");
     } else {
       throw new Error(error.message || "Failed to scan bill. Try again with a clearer image.");
     }

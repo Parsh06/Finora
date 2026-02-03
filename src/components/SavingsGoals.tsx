@@ -6,11 +6,13 @@ import { subscribeToSavingsGoals, SavingsGoal, addSavingsGoal, updateSavingsGoal
 import { toast } from "sonner";
 import confetti from "canvas-confetti";
 import { usePrivacy } from "@/contexts/PrivacyContext";
+import { groqJsonCompletion, GroqMessage } from "@/lib/groq-service";
 
 export const SavingsGoals = () => {
     const { currentUser } = useAuth();
     const { isPrivacyEnabled } = usePrivacy();
     const [goals, setGoals] = useState<SavingsGoal[]>([]);
+    const [transactions, setTransactions] = useState<Transaction[]>([]); // Store transactions
     const [loading, setLoading] = useState(true);
     const [availableSavings, setAvailableSavings] = useState(0);
     const [showAddModal, setShowAddModal] = useState(false);
@@ -20,6 +22,12 @@ export const SavingsGoals = () => {
     const [celebratedGoal, setCelebratedGoal] = useState<SavingsGoal | null>(null);
     const [editingGoal, setEditingGoal] = useState<SavingsGoal | null>(null);
     const [fundingGoal, setFundingGoal] = useState<SavingsGoal | null>(null);
+
+    // AI State
+    const [aiLoading, setAiLoading] = useState(false);
+    const [showAiModal, setShowAiModal] = useState(false);
+    const [aiResult, setAiResult] = useState<{ prediction: string; advice: string; affordDate: string; color: string } | null>(null);
+    const [analyzingGoalName, setAnalyzingGoalName] = useState("");
 
     // Form state
     const [name, setName] = useState("");
@@ -46,9 +54,10 @@ export const SavingsGoals = () => {
     useEffect(() => {
         const fetchFinancials = async () => {
             if (!currentUser) return;
-            const transactions = await getTransactions(currentUser.uid);
+            const txs = await getTransactions(currentUser.uid);
+            setTransactions(txs); // Store for AI context
 
-            const income = transactions
+            const income = txs
                 .filter(t => t.type === "income")
                 .reduce((sum, t) => sum + t.amount, 0);
 
@@ -160,6 +169,70 @@ export const SavingsGoals = () => {
         }
     };
 
+    const handleAnalyzeGoal = async (goal: SavingsGoal) => {
+        setAnalyzingGoalName(goal.name);
+        setAiLoading(true);
+        setShowAiModal(true);
+        setAiResult(null);
+
+        try {
+            // Calculate financial context (Last 3 months simplified)
+            const now = new Date();
+            const threeMonthsAgo = new Date();
+            threeMonthsAgo.setMonth(now.getMonth() - 3);
+
+            const recentTxs = transactions.filter(t => {
+                const d = t.date instanceof Date ? t.date : (t.date as any).toDate();
+                return d >= threeMonthsAgo;
+            });
+
+            const income = recentTxs.filter(t => t.type === "income").reduce((sum, t) => sum + t.amount, 0);
+            const expense = recentTxs.filter(t => t.type === "expense").reduce((sum, t) => sum + t.amount, 0);
+            const monthlySavings = (income - expense) / 3;
+
+            const remaining = goal.targetAmount - goal.currentAmount;
+            const monthsToGoal = monthlySavings > 0 ? Math.ceil(remaining / monthlySavings) : 999;
+
+            const prompt = `
+                Analyze purchasing power for goal: "${goal.name}" (Cost: ${goal.targetAmount}, Saved: ${goal.currentAmount}).
+                User avg monthly savings: ${Math.round(monthlySavings)}.
+                Remaining needed: ${remaining}.
+                
+                Predict:
+                1. precise_date: When they can afford it (assuming they use 100% of savings). Format: "Month Year".
+                2. advice: Brief financial advice (impulse control, 50/30/20 rule, feasibility). Max 2 sentences.
+                3. status_color: "green" (Easy), "yellow" (Tight), "red" (Unrealistic).
+                
+                Return JSON only.
+            `;
+
+            const messages: GroqMessage[] = [
+                { role: "system", content: "You are a pragmatic financial advisor. JSON output only." },
+                { role: "user", content: prompt }
+            ];
+
+            const result = await groqJsonCompletion<{ precise_date: string; advice: string; status_color: string }>(messages);
+
+            setAiResult({
+                prediction: `You can likely afford this by ${result.precise_date}`,
+                affordDate: result.precise_date,
+                advice: result.advice,
+                color: result.status_color
+            });
+
+        } catch (error) {
+            console.error(error);
+            setAiResult({
+                prediction: "Analysis Unavailable",
+                affordDate: "Unknown",
+                advice: "Could not analyze cash flow at this time. Try tracking more expenses first.",
+                color: "gray"
+            });
+        } finally {
+            setAiLoading(false);
+        }
+    };
+
     const openEdit = (goal: SavingsGoal) => {
         setEditingGoal(goal);
         setName(goal.name);
@@ -254,6 +327,13 @@ export const SavingsGoals = () => {
                                         </div>
                                     </div>
                                     <div className="flex gap-2">
+                                        <button
+                                            onClick={() => handleAnalyzeGoal(goal)}
+                                            className="p-2 hover:bg-muted rounded-lg group"
+                                            title="Analyze Affordability"
+                                        >
+                                            <Sparkles className="w-4 h-4 text-purple-500 group-hover:scale-110 transition-transform" />
+                                        </button>
                                         <button onClick={() => openEdit(goal)} className="p-2 hover:bg-muted rounded-lg"><Pencil className="w-4 h-4 text-muted-foreground" /></button>
                                         <button onClick={() => handleDelete(goal.id!)} className="p-2 hover:bg-muted rounded-lg"><Trash2 className="w-4 h-4 text-muted-foreground" /></button>
                                     </div>
@@ -501,6 +581,76 @@ export const SavingsGoals = () => {
                     )
                 }
             </AnimatePresence >
+
+            {/* AI Analysis Modal */}
+            <AnimatePresence>
+                {showAiModal && (
+                    <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+                        onClick={() => setShowAiModal(false)}
+                    >
+                        <motion.div
+                            initial={{ scale: 0.9, opacity: 0 }}
+                            animate={{ scale: 1, opacity: 1 }}
+                            exit={{ scale: 0.9, opacity: 0 }}
+                            className="bg-card w-full max-w-sm rounded-[2rem] p-6 relative overflow-hidden"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-purple-500 via-pink-500 to-yellow-500" />
+
+                            <div className="flex items-center gap-3 mb-4">
+                                <div className="p-3 rounded-full bg-purple-500/10">
+                                    <Sparkles className="w-6 h-6 text-purple-500" />
+                                </div>
+                                <div>
+                                    <h3 className="font-bold text-lg">AI Affordability Check</h3>
+                                    <p className="text-xs text-muted-foreground">{analyzingGoalName}</p>
+                                </div>
+                                <button onClick={() => setShowAiModal(false)} className="ml-auto p-1 text-muted-foreground"><X className="w-5 h-5" /></button>
+                            </div>
+
+                            {aiLoading ? (
+                                <div className="py-8 text-center space-y-3">
+                                    <div className="animate-spin w-8 h-8 border-2 border-primary border-t-transparent rounded-full mx-auto" />
+                                    <p className="text-sm text-muted-foreground animate-pulse">Analyzing cash flow & savings impact...</p>
+                                </div>
+                            ) : aiResult ? (
+                                <div className="space-y-4">
+                                    <div className={`p-4 rounded-xl border ${aiResult.color === "green" ? "bg-green-500/10 border-green-500/20" :
+                                            aiResult.color === "yellow" ? "bg-yellow-500/10 border-yellow-500/20" :
+                                                aiResult.color === "red" ? "bg-red-500/10 border-red-500/20" :
+                                                    "bg-secondary/50 border-border"
+                                        }`}>
+                                        <h4 className="font-semibold mb-1 flex items-center gap-2">
+                                            {aiResult.color === "green" ? "✅ Achievable" :
+                                                aiResult.color === "yellow" ? "⚠️ Stretch Goal" :
+                                                    aiResult.color === "red" ? "🛑 Difficult" : "Analytics"}
+                                        </h4>
+                                        <p className="text-sm opacity-90">{aiResult.prediction}</p>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <h5 className="text-xs font-bold text-muted-foreground uppercase tracking-wider">Smart Advice</h5>
+                                        <p className="text-sm leading-relaxed text-foreground/80 bg-secondary/30 p-3 rounded-lg">
+                                            "{aiResult.advice}"
+                                        </p>
+                                    </div>
+
+                                    <button
+                                        onClick={() => setShowAiModal(false)}
+                                        className="w-full py-3 rounded-xl bg-secondary hover:bg-muted font-medium transition-colors text-sm"
+                                    >
+                                        Understood
+                                    </button>
+                                </div>
+                            ) : null}
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
         </div >
     );
 };

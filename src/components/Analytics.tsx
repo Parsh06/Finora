@@ -3,7 +3,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from "recharts";
 import { useAuth } from "@/contexts/AuthContext";
 import { subscribeToTransactions, Transaction } from "@/lib/firestore";
-import { format, startOfWeek, startOfMonth, startOfYear, eachDayOfInterval, eachMonthOfInterval, subMonths, endOfYear, endOfMonth, endOfDay, startOfDay } from "date-fns";
+import { format, startOfWeek, startOfMonth, startOfYear, eachDayOfInterval, eachMonthOfInterval, subMonths, endOfYear, endOfMonth, endOfDay, startOfDay, subDays } from "date-fns";
 import { DateFilter, DateFilterState } from "./DateFilter";
 import { TrendingUp, TrendingDown, Wallet, PiggyBank, ArrowUpRight, ArrowDownLeft, Target, Download } from "lucide-react";
 import jsPDF from "jspdf";
@@ -21,7 +21,7 @@ export const Analytics = () => {
   const [activeTab, setActiveTab] = useState<TabType>("monthly");
   const [isExporting, setIsExporting] = useState(false);
   const [dateFilter, setDateFilter] = useState<DateFilterState>({ mode: "all" });
-  
+
   // Refs for PDF export
   const chartRef = useRef<HTMLDivElement>(null);
   const summaryRef = useRef<HTMLDivElement>(null);
@@ -44,7 +44,7 @@ export const Analytics = () => {
     const now = new Date();
     let startDate: Date;
     let endDate: Date = now;
-    
+
     // Use date filter if set, otherwise use activeTab
     if (dateFilter.mode === "year" && dateFilter.year !== undefined) {
       startDate = startOfYear(new Date(dateFilter.year, 0, 1));
@@ -58,7 +58,7 @@ export const Analytics = () => {
     } else {
       // Use activeTab for default filtering
       if (activeTab === "weekly") {
-        startDate = startOfWeek(now);
+        startDate = subDays(now, 6); // Last 7 days
       } else if (activeTab === "monthly") {
         startDate = startOfMonth(now);
       } else {
@@ -75,7 +75,7 @@ export const Analytics = () => {
     const income = filteredTransactions
       .filter((t) => t.type === "income")
       .reduce((sum, t) => sum + t.amount, 0);
-    
+
     const expense = filteredTransactions
       .filter((t) => t.type === "expense")
       .reduce((sum, t) => sum + t.amount, 0);
@@ -157,10 +157,11 @@ export const Analytics = () => {
     } else {
       // Default: use activeTab for comparison
       if (activeTab === "weekly") {
-        const weekStart = startOfWeek(now);
+        const weekStart = subDays(now, 6);
         const days = eachDayOfInterval({ start: weekStart, end: now });
         comparisonData = days.map((day) => {
-          const dayTransactions = filteredTransactions.filter((t) => {
+          // Use all transactions logic for consistency, though filteredTransactions is now aligned
+          const dayTransactions = transactions.filter((t) => {
             const date = t.date instanceof Date ? t.date : t.date.toDate();
             return format(date, "yyyy-MM-dd") === format(day, "yyyy-MM-dd");
           });
@@ -180,7 +181,8 @@ export const Analytics = () => {
           end: now,
         });
         comparisonData = months.map((month) => {
-          const monthTransactions = filteredTransactions.filter((t) => {
+          // Use all transactions for the chart trend, not just currently filtered ones
+          const monthTransactions = transactions.filter((t) => {
             const date = t.date instanceof Date ? t.date : t.date.toDate();
             return format(date, "yyyy-MM") === format(month, "yyyy-MM");
           });
@@ -200,7 +202,8 @@ export const Analytics = () => {
           end: now,
         });
         comparisonData = months.map((month) => {
-          const monthTransactions = filteredTransactions.filter((t) => {
+          // Use all transactions for the chart trend
+          const monthTransactions = transactions.filter((t) => {
             const date = t.date instanceof Date ? t.date : t.date.toDate();
             return format(date, "yyyy-MM") === format(month, "yyyy-MM");
           });
@@ -222,7 +225,7 @@ export const Analytics = () => {
     // Comparison with previous period
     let previousPeriodIncome = 0;
     let previousPeriodExpense = 0;
-    
+
     if (activeTab === "weekly") {
       const lastWeekStart = new Date(startDate);
       lastWeekStart.setDate(lastWeekStart.getDate() - 7);
@@ -278,7 +281,7 @@ export const Analytics = () => {
     if (!currentUser || isExporting) return;
 
     setIsExporting(true);
-    toast.loading("Generating PDF report...", { id: "pdf-export" });
+    toast.loading("Generating premium report...", { id: "pdf-export" });
 
     try {
       const pdf = new jsPDF("p", "mm", "a4");
@@ -287,337 +290,315 @@ export const Analytics = () => {
       const margin = 15;
       let yPosition = margin;
 
-      // Helper function to add new page if needed
+      // Brand Colors
+      const colors = {
+        primary: [20, 20, 30], // Dark background
+        accent: [165, 80, 45], // Teal (approx HSL) -> RGB: [23, 206, 166] (approx)
+        secondary: [40, 40, 50], // Lighter dark
+        text: [20, 20, 30],
+        textLight: [255, 255, 255],
+        textMuted: [120, 120, 130],
+        success: [34, 197, 94],
+        danger: [239, 68, 68],
+        warning: [245, 158, 11],
+        info: [59, 130, 246]
+      };
+
+      // Helper: Check Page Break
       const checkPageBreak = (requiredHeight: number) => {
         if (yPosition + requiredHeight > pageHeight - margin) {
           pdf.addPage();
           yPosition = margin;
+          return true;
         }
+        return false;
       };
 
-      // Helper function to format currency (avoid special character issues)
-      const formatCurrency = (amount: number) => {
-        return `Rs. ${amount.toLocaleString("en-IN")}`;
+      // Helper: Draw Rounded Rect with any cast to avoid TS issues
+      const roundedRect = (x: number, y: number, w: number, h: number, rx: number, ry: number, style: string) => {
+        (pdf as any).roundedRect(x, y, w, h, rx, ry, style);
       };
 
-      // Helper function to add section header
-      const addSectionHeader = (title: string, yPos: number) => {
-        checkPageBreak(15);
-        pdf.setFillColor(30, 30, 40);
-        pdf.rect(margin, yPos, pageWidth - 2 * margin, 7, "F");
-        pdf.setTextColor(255, 255, 255);
-        pdf.setFontSize(13);
-        pdf.setFont("helvetica", "bold");
-        pdf.text(title, margin + 5, yPos + 5.5);
-        return yPos + 10;
-      };
+      // === HEADER ===
+      // Dark Header Background
+      pdf.setFillColor(colors.primary[0], colors.primary[1], colors.primary[2]);
+      pdf.rect(0, 0, pageWidth, 50, "F");
 
-      // Header Section
-      pdf.setFillColor(20, 20, 30);
-      pdf.rect(0, 0, pageWidth, 45, "F");
-      
+      // Logo / Brand Name
       pdf.setTextColor(255, 255, 255);
-      pdf.setFontSize(22);
       pdf.setFont("helvetica", "bold");
-      pdf.text("Financial Analytics Report", pageWidth / 2, 18, { align: "center" });
-      
-      const userName = userProfile?.name || currentUser?.displayName || currentUser?.email?.split("@")[0] || "User";
-      pdf.setFontSize(12);
+      pdf.setFontSize(26);
+      pdf.text("Finora.", margin, 20);
+
       pdf.setFont("helvetica", "normal");
-      pdf.text(`Generated for: ${userName}`, pageWidth / 2, 26, { align: "center" });
-      
-      const { startDate, endDate } = analyticsData;
-      const periodLabel = activeTab === "weekly" ? "Week" : activeTab === "monthly" ? "Month" : "Year";
-      const dateRange = `${format(startDate, "MMM d, yyyy")} - ${format(endDate, "MMM d, yyyy")}`;
       pdf.setFontSize(10);
-      pdf.text(`Period: ${periodLabel} (${dateRange})`, pageWidth / 2, 34, { align: "center" });
-      
-      pdf.setFontSize(9);
       pdf.setTextColor(200, 200, 200);
-      pdf.text(`Generated on ${format(new Date(), "MMM d, yyyy 'at' h:mm a")}`, pageWidth / 2, 40, { align: "center" });
-      
-      yPosition = 55;
+      pdf.text("Smart Personal Finance", margin, 26);
 
-      // Financial Summary Section
-      yPosition = addSectionHeader("Financial Summary", yPosition);
-      
-      const { income, expense, savings, savingsRate } = analyticsData;
-      const summaryBoxHeight = 50;
-      checkPageBreak(summaryBoxHeight);
-      
-      pdf.setFillColor(245, 245, 250);
-      pdf.rect(margin, yPosition, pageWidth - 2 * margin, summaryBoxHeight, "F");
-      
-      pdf.setFontSize(11);
+      // Report Title & Date (Right Aligned)
+      pdf.setFont("helvetica", "bold");
+      pdf.setFontSize(16);
+      pdf.setTextColor(255, 255, 255);
+      pdf.text("Financial Report", pageWidth - margin, 20, { align: "right" });
+
+      const userName = userProfile?.name || currentUser?.displayName || "User";
       pdf.setFont("helvetica", "normal");
-      
-      // Income Row
-      pdf.setTextColor(0, 0, 0);
-      pdf.setFont("helvetica", "bold");
-      pdf.text("Income:", margin + 8, yPosition + 10);
-      pdf.setTextColor(76, 175, 80);
-      pdf.text(formatCurrency(income), pageWidth - margin - 8, yPosition + 10, { align: "right" });
-      
-      // Expense Row
-      pdf.setTextColor(0, 0, 0);
-      pdf.setFont("helvetica", "bold");
-      pdf.text("Expenses:", margin + 8, yPosition + 18);
-      pdf.setTextColor(244, 67, 54);
-      pdf.text(formatCurrency(expense), pageWidth - margin - 8, yPosition + 18, { align: "right" });
-      
-      // Net Savings Row
-      pdf.setTextColor(0, 0, 0);
-      pdf.setFont("helvetica", "bold");
-      pdf.text("Net Savings:", margin + 8, yPosition + 26);
-      const savingsColor = savings >= 0 ? [76, 175, 80] : [244, 67, 54];
-      pdf.setTextColor(savingsColor[0], savingsColor[1], savingsColor[2]);
-      const savingsText = `${savings >= 0 ? "+" : ""}${formatCurrency(Math.abs(savings))}`;
-      pdf.text(savingsText, pageWidth - margin - 8, yPosition + 26, { align: "right" });
-      
-      // Savings Rate Row
-      pdf.setTextColor(0, 0, 0);
-      pdf.setFont("helvetica", "bold");
-      pdf.text("Savings Rate:", margin + 8, yPosition + 34);
-      const savingsRateColor = savingsRate >= 20 ? [76, 175, 80] : savingsRate >= 10 ? [255, 152, 0] : [244, 67, 54];
-      pdf.setTextColor(savingsRateColor[0], savingsRateColor[1], savingsRateColor[2]);
-      pdf.text(`${Math.round(savingsRate)}%`, pageWidth - margin - 8, yPosition + 34, { align: "right" });
-      
-      // Visual progress bar for savings rate
-      const barWidth = pageWidth - 2 * margin - 16;
-      const barHeight = 4;
-      pdf.setFillColor(230, 230, 230);
-      pdf.rect(margin + 8, yPosition + 38, barWidth, barHeight, "F");
-      const fillWidth = Math.min(100, Math.max(0, savingsRate)) / 100 * barWidth;
-      pdf.setFillColor(savingsRateColor[0], savingsRateColor[1], savingsRateColor[2]);
-      pdf.rect(margin + 8, yPosition + 38, fillWidth, barHeight, "F");
-      
-      yPosition += summaryBoxHeight + 5;
+      pdf.setFontSize(10);
+      pdf.setTextColor(200, 200, 200);
+      pdf.text(`Prepared for ${userName}`, pageWidth - margin, 26, { align: "right" });
 
-      // Chart Section - Income vs Expenses
+      const periodLabel = activeTab === "weekly" ? "Weekly" : activeTab === "monthly" ? "Monthly" : "Yearly";
+      const { startDate, endDate } = analyticsData;
+      const dateRange = `${format(startDate, "MMM d")} - ${format(endDate, "MMM d, yyyy")}`;
+      pdf.text(`${periodLabel} Period: ${dateRange}`, pageWidth - margin, 32, { align: "right" });
+
+      pdf.setFontSize(8);
+      pdf.setTextColor(150, 150, 160);
+      pdf.text(`Generated on ${format(new Date(), "PP p")}`, pageWidth - margin, 42, { align: "right" });
+
+      yPosition = 60;
+
+      // === SUMMARY CARDS ===
+      const { income, expense, savings, savingsRate } = analyticsData;
+      const cardWidth = (pageWidth - (margin * 2) - 10) / 3;
+      const cardHeight = 35;
+
+      // Card 1: Income
+      pdf.setFillColor(240, 253, 244); // Light Green bg
+      roundedRect(margin, yPosition, cardWidth, cardHeight, 3, 3, "F");
+      pdf.setDrawColor(220, 252, 231);
+      roundedRect(margin, yPosition, cardWidth, cardHeight, 3, 3, "S");
+
+      pdf.setFontSize(10);
+      pdf.setTextColor(colors.success[0], colors.success[1], colors.success[2]);
+      pdf.setFont("helvetica", "bold");
+      pdf.text("TOTAL INCOME", margin + 5, yPosition + 10);
+
+      pdf.setFontSize(16);
+      pdf.setTextColor(20, 20, 30);
+      pdf.text(`Rs. ${income.toLocaleString()}`, margin + 5, yPosition + 22);
+
+      // Card 2: Expenses
+      pdf.setFillColor(254, 242, 242); // Light Red bg
+      roundedRect(margin + cardWidth + 5, yPosition, cardWidth, cardHeight, 3, 3, "F");
+      pdf.setDrawColor(254, 226, 226);
+      roundedRect(margin + cardWidth + 5, yPosition, cardWidth, cardHeight, 3, 3, "S");
+
+      pdf.setFontSize(10);
+      pdf.setTextColor(colors.danger[0], colors.danger[1], colors.danger[2]);
+      pdf.setFont("helvetica", "bold");
+      pdf.text("TOTAL EXPENSES", margin + cardWidth + 10, yPosition + 10);
+
+      pdf.setFontSize(16);
+      pdf.setTextColor(20, 20, 30);
+      pdf.text(`Rs. ${expense.toLocaleString()}`, margin + cardWidth + 10, yPosition + 22);
+
+      // Card 3: Payings/Savings
+      const isPositive = savings >= 0;
+      const saveBg = isPositive ? [240, 249, 255] : [255, 247, 237]; // Blue or Orange
+      const saveColor = isPositive ? colors.info : colors.warning;
+
+      pdf.setFillColor(saveBg[0], saveBg[1], saveBg[2]);
+      roundedRect(margin + (cardWidth * 2) + 10, yPosition, cardWidth, cardHeight, 3, 3, "F");
+
+      pdf.setFontSize(10);
+      pdf.setTextColor(saveColor[0], saveColor[1], saveColor[2]);
+      pdf.setFont("helvetica", "bold");
+      pdf.text("NET SAVINGS", margin + (cardWidth * 2) + 15, yPosition + 10);
+
+      pdf.setFontSize(16);
+      pdf.setTextColor(20, 20, 30);
+      const savingsPrefix = isPositive ? "+" : "";
+      pdf.text(`${savingsPrefix}Rs. ${Math.abs(savings).toLocaleString()}`, margin + (cardWidth * 2) + 15, yPosition + 22);
+
+      pdf.setFontSize(9);
+      pdf.setTextColor(100, 100, 100);
+      pdf.text(`${Math.round(savingsRate)}% Savings Rate`, margin + (cardWidth * 2) + 15, yPosition + 29);
+
+      yPosition += cardHeight + 15;
+
+      // === CHART SECTION ===
       if (chartRef.current && analyticsData.comparisonData.length > 0) {
-        yPosition = addSectionHeader("Income vs Expenses Comparison", yPosition);
-        checkPageBreak(75);
-        
+        checkPageBreak(80);
+
+        pdf.setFontSize(12);
+        pdf.setTextColor(colors.primary[0], colors.primary[1], colors.primary[2]);
+        pdf.setFont("helvetica", "bold");
+        pdf.text("Income vs. Expenses Trend", margin, yPosition);
+        yPosition += 5;
+
         try {
-          // Add a black background box for the chart
-          const chartBoxHeight = 70;
-          pdf.setFillColor(0, 0, 0);
-          pdf.rect(margin, yPosition, pageWidth - 2 * margin, chartBoxHeight, "F");
-          
-          // Add a subtle border
-          pdf.setDrawColor(50, 50, 50);
-          pdf.setLineWidth(0.5);
-          pdf.rect(margin, yPosition, pageWidth - 2 * margin, chartBoxHeight, "S");
-          
-          // Capture chart with pure black background
+          // Capture chart - ensure black background for capture to match screen, but maybe we want white for print?
+          // The user specifically liked the "nice colours". Let's stick to the dark chart if it looks premium, 
+          // OR invert it for paper. Given "premium" often implies dark mode UI, let's keep the dark chart capture 
+          // but maybe wrap it nicely.
+
+          // Container for chart
+          pdf.setFillColor(20, 20, 25);
+          roundedRect(margin, yPosition, pageWidth - (margin * 2), 70, 3, 3, "F");
+
           const chartCanvas = await html2canvas(chartRef.current, {
             backgroundColor: "#000000",
-            scale: 2.5,
+            scale: 2,
             logging: false,
-            useCORS: true,
-            allowTaint: true,
-            windowWidth: chartRef.current.scrollWidth,
-            windowHeight: chartRef.current.scrollHeight,
+            useCORS: true
           });
-          
-          const chartImgData = chartCanvas.toDataURL("image/png");
-          const imgWidth = pageWidth - 2 * margin - 4;
+
+          const imgData = chartCanvas.toDataURL("image/png");
+          const imgWidth = pageWidth - (margin * 2) - 10;
           const imgHeight = (chartCanvas.height * imgWidth) / chartCanvas.width;
-          const maxHeight = chartBoxHeight - 4;
-          
-          // Center the chart image in the black box
-          const imgY = yPosition + 2;
-          const imgX = margin + 2;
-          
-          pdf.addImage(chartImgData, "PNG", imgX, imgY, imgWidth, Math.min(imgHeight, maxHeight));
-          yPosition += chartBoxHeight + 5;
-        } catch (error) {
-          console.error("Error capturing chart:", error);
-          // Draw error message on black background
-          pdf.setFillColor(0, 0, 0);
-          pdf.rect(margin, yPosition, pageWidth - 2 * margin, 30, "F");
-          pdf.setTextColor(255, 255, 255);
-          pdf.setFontSize(10);
-          pdf.text("Chart could not be generated", margin + 5, yPosition + 15);
-          yPosition += 35;
+
+          // Center image in the dark box
+          pdf.addImage(imgData, "PNG", margin + 5, yPosition + 5, imgWidth, Math.min(60, imgHeight));
+
+          yPosition += 75;
+        } catch (e) {
+          console.error("Chart capture failed", e);
+          yPosition += 10;
         }
       }
 
-      // Category Breakdown Section
+      // === CATEGORIES TABLE ===
       if (analyticsData.topCategories.length > 0) {
-        yPosition = addSectionHeader("Spending by Category", yPosition);
-        checkPageBreak(analyticsData.topCategories.length * 12 + 5);
-        
-        pdf.setFontSize(10);
-        pdf.setFont("helvetica", "normal");
-        
-        analyticsData.topCategories.forEach((category, index) => {
-          checkPageBreak(15);
-          const percentage = expense > 0 ? Math.round((category.value / expense) * 100) : 0;
-          
-          // Category row with background
-          pdf.setFillColor(250, 250, 255);
-          pdf.rect(margin, yPosition - 2, pageWidth - 2 * margin, 12, "F");
-          
-          // Category name and amount
-          pdf.setTextColor(0, 0, 0);
-          pdf.setFont("helvetica", "bold");
-          pdf.text(`${index + 1}. ${category.name}`, margin + 5, yPosition + 5);
-          
-          pdf.setFont("helvetica", "normal");
-          pdf.text(formatCurrency(category.value), pageWidth - margin - 60, yPosition + 5, { align: "right" });
-          pdf.text(`(${percentage}%)`, pageWidth - margin - 5, yPosition + 5, { align: "right" });
-          
-          // Progress bar
-          const barWidth = pageWidth - 2 * margin - 10;
-          const barHeight = 3;
-          pdf.setFillColor(230, 230, 230);
-          pdf.rect(margin + 5, yPosition + 7, barWidth, barHeight, "F");
-          
-          // Progress bar fill with category color
-          const fillWidth = (percentage / 100) * barWidth;
-          // Convert hex color to RGB for PDF
-          const hexColor = category.color.replace('#', '');
-          const r = parseInt(hexColor.substring(0, 2), 16);
-          const g = parseInt(hexColor.substring(2, 4), 16);
-          const b = parseInt(hexColor.substring(4, 6), 16);
-          pdf.setFillColor(r, g, b);
-          pdf.rect(margin + 5, yPosition + 7, fillWidth, barHeight, "F");
-          
-          yPosition += 12;
-        });
-        
-        yPosition += 2;
-      }
+        checkPageBreak(50);
 
-      // Key Insights Section
-      yPosition = addSectionHeader("Key Insights & Recommendations", yPosition);
-      checkPageBreak(60);
-      
-      pdf.setFontSize(9.5);
-      pdf.setFont("helvetica", "normal");
-      
-      const insights: Array<{ text: string; color: number[]; icon: string }> = [];
-      
-      if (savingsRate >= 20) {
-        insights.push({
-          text: `Excellent Savings Rate: You are saving ${Math.round(savingsRate)}% of your income. Keep up the great work!`,
-          color: [76, 175, 80],
-          icon: "✓"
-        });
-      } else if (savingsRate < 10 && savingsRate >= 0) {
-        insights.push({
-          text: `Low Savings Rate: Your savings rate is ${Math.round(savingsRate)}%. Aim for at least 20% for better financial health.`,
-          color: [255, 152, 0],
-          icon: "!"
-        });
-      }
-      
-      if (savings < 0) {
-        insights.push({
-          text: `Spending Exceeds Income: You are spending ${formatCurrency(Math.abs(savings))} more than you earn. Consider reducing expenses or increasing income.`,
-          color: [244, 67, 54],
-          icon: "X"
-        });
-      }
-      
-      if (analyticsData.topCategories.length > 0) {
-        const topCat = analyticsData.topCategories[0];
-        const topCatPercentage = expense > 0 ? Math.round((topCat.value / expense) * 100) : 0;
-        insights.push({
-          text: `Top Spending Category: ${topCat.name} accounts for ${topCatPercentage}% of your expenses (${formatCurrency(topCat.value)})`,
-          color: [33, 150, 243],
-          icon: "•"
-        });
-      }
-      
-      if (analyticsData.expenseChange > 10) {
-        insights.push({
-          text: `Expense Increase: Your expenses increased by ${Math.round(analyticsData.expenseChange)}% compared to last ${periodLabel.toLowerCase()}. Review your spending patterns.`,
-          color: [255, 152, 0],
-          icon: "↑"
-        });
-      } else if (analyticsData.expenseChange < -10) {
-        insights.push({
-          text: `Expense Reduction: Great job! Your expenses decreased by ${Math.abs(Math.round(analyticsData.expenseChange))}% compared to last ${periodLabel.toLowerCase()}.`,
-          color: [76, 175, 80],
-          icon: "↓"
-        });
-      }
-      
-      insights.forEach((insight) => {
-        checkPageBreak(10);
-        pdf.setFillColor(insight.color[0], insight.color[1], insight.color[2]);
-        pdf.circle(margin + 3, yPosition - 1, 2, "F");
-        
-        pdf.setTextColor(insight.color[0], insight.color[1], insight.color[2]);
+        yPosition += 5;
+        pdf.setFontSize(12);
+        pdf.setTextColor(colors.primary[0], colors.primary[1], colors.primary[2]);
         pdf.setFont("helvetica", "bold");
-        pdf.text(insight.icon, margin + 7, yPosition);
-        
-        pdf.setTextColor(0, 0, 0);
+        pdf.text("Top Spending Categories", margin, yPosition);
+        yPosition += 8;
+
+        // Table Header
+        pdf.setFillColor(245, 245, 247);
+        roundedRect(margin, yPosition, pageWidth - (margin * 2), 8, 1, 1, "F");
+
+        pdf.setFontSize(9);
+        pdf.setTextColor(100, 100, 100);
+        pdf.setFont("helvetica", "bold");
+        pdf.text("CATEGORY", margin + 5, yPosition + 5.5);
+        pdf.text("AMOUNT", pageWidth - margin - 40, yPosition + 5.5, { align: "right" });
+        pdf.text("% OF EXPENSES", pageWidth - margin - 5, yPosition + 5.5, { align: "right" });
+
+        yPosition += 12;
+
+        // Table Rows
+        analyticsData.topCategories.forEach((cat, i) => {
+          checkPageBreak(12);
+
+          const percentage = expense > 0 ? Math.round((cat.value / expense) * 100) : 0;
+
+          // Icon placeholder (Circle)
+          const hex = cat.color.replace("#", "");
+          const r = parseInt(hex.substring(0, 2), 16);
+          const g = parseInt(hex.substring(2, 4), 16);
+          const b = parseInt(hex.substring(4, 6), 16);
+
+          if (!isNaN(r) && !isNaN(g) && !isNaN(b)) {
+            pdf.setFillColor(r, g, b);
+          } else {
+            pdf.setFillColor(200, 200, 200); // Fallback color
+          }
+          pdf.circle(margin + 7, yPosition - 1, 3, "F");
+
+          pdf.setFontSize(10);
+          pdf.setTextColor(50, 50, 60);
+          pdf.setFont("helvetica", "bold");
+          pdf.text(cat.name, margin + 15, yPosition);
+
+          pdf.setFont("helvetica", "normal");
+          pdf.text(`Rs. ${cat.value.toLocaleString()}`, pageWidth - margin - 40, yPosition, { align: "right" });
+
+          // Progress bar for visual percentage
+          pdf.setFillColor(230, 230, 230);
+          roundedRect(pageWidth - margin - 30, yPosition - 2.5, 25, 3, 1, 1, "F");
+          if (!isNaN(r) && !isNaN(g) && !isNaN(b)) {
+            pdf.setFillColor(r, g, b);
+          } else {
+            pdf.setFillColor(100, 100, 100); // Fallback color
+          }
+          roundedRect(pageWidth - margin - 30, yPosition - 2.5, (percentage / 100) * 25, 3, 1, 1, "F");
+
+          yPosition += 10;
+
+          // Light separator line
+          pdf.setDrawColor(240, 240, 240);
+          pdf.line(margin, yPosition - 5, pageWidth - margin, yPosition - 5);
+        });
+      }
+
+      yPosition += 10;
+
+      // === INSIGHTS SECTION ===
+      checkPageBreak(50);
+
+      pdf.setFontSize(12);
+      pdf.setTextColor(colors.primary[0], colors.primary[1], colors.primary[2]);
+      pdf.setFont("helvetica", "bold");
+      pdf.text("Key Insights", margin, yPosition);
+      yPosition += 8;
+
+      const insights = [];
+      // Generate insights logic (reused)
+      if (savingsRate >= 20) {
+        insights.push({ title: "Great Savings Habit", text: `You're saving ${Math.round(savingsRate)}% of your income. Keep it up!`, type: "success" });
+      } else if (savingsRate < 10 && savingsRate >= 0) {
+        insights.push({ title: "Boost Your Savings", text: `Your savings rate is ${Math.round(savingsRate)}%. Aim for 20% for better stability.`, type: "warning" });
+      } else {
+        insights.push({ title: "Action Needed", text: `You're spending more than you earn. Review expenses.`, type: "danger" });
+      }
+
+      if (analyticsData.topCategories.length > 0) {
+        const top = analyticsData.topCategories[0];
+        insights.push({ title: "Top Expense", text: `${top.name} is your highest spend (${Math.round((top.value / expense) * 100)}%).`, type: "info" });
+      }
+
+      insights.forEach(insight => {
+        const boxHeight = 18;
+        checkPageBreak(boxHeight + 5);
+
+        let bg = [240, 249, 255];
+        let border = colors.info;
+        if (insight.type === "success") { bg = [240, 253, 244]; border = colors.success; }
+        if (insight.type === "warning") { bg = [255, 251, 235]; border = colors.warning; }
+        if (insight.type === "danger") { bg = [254, 242, 242]; border = colors.danger; }
+
+        pdf.setFillColor(bg[0], bg[1], bg[2]);
+        roundedRect(margin, yPosition, pageWidth - (margin * 2), boxHeight, 2, 2, "F");
+
+        // Colored left strip
+        pdf.setFillColor(border[0], border[1], border[2]);
+        roundedRect(margin, yPosition, 2, boxHeight, 0, 0, "F");
+
+        pdf.setFontSize(10);
+        pdf.setTextColor(border[0], border[1], border[2]);
+        pdf.setFont("helvetica", "bold");
+        pdf.text(insight.title, margin + 5, yPosition + 6);
+
+        pdf.setFontSize(9);
+        pdf.setTextColor(60, 60, 70);
         pdf.setFont("helvetica", "normal");
-        const lines = pdf.splitTextToSize(insight.text, pageWidth - 2 * margin - 15);
-        if (Array.isArray(lines)) {
-          lines.forEach((line: string, idx: number) => {
-            pdf.text(line, margin + 12, yPosition + (idx * 4.5));
-          });
-          yPosition += lines.length * 4.5 + 3;
-        } else {
-          pdf.text(lines, margin + 12, yPosition);
-          yPosition += 6;
-        }
+        pdf.text(insight.text, margin + 5, yPosition + 12);
+
+        yPosition += boxHeight + 4;
       });
 
-      // Helper function to convert HSL to RGB
-      function hslToRgb(h: number, s: number, l: number): number[] {
-        let r, g, b;
-        if (s === 0) {
-          r = g = b = l;
-        } else {
-          const hue2rgb = (p: number, q: number, t: number) => {
-            if (t < 0) t += 1;
-            if (t > 1) t -= 1;
-            if (t < 1/6) return p + (q - p) * 6 * t;
-            if (t < 1/2) return q;
-            if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
-            return p;
-          };
-          const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-          const p = 2 * l - q;
-          r = hue2rgb(p, q, h / 360 + 1/3);
-          g = hue2rgb(p, q, h / 360);
-          b = hue2rgb(p, q, h / 360 - 1/3);
-        }
-        return [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)];
-      }
-
-      // Footer on all pages
+      // === FOOTER ===
       const totalPages = pdf.getNumberOfPages();
       for (let i = 1; i <= totalPages; i++) {
         pdf.setPage(i);
-        pdf.setDrawColor(200, 200, 200);
-        pdf.line(margin, pageHeight - 15, pageWidth - margin, pageHeight - 15);
-        pdf.setTextColor(150, 150, 150);
         pdf.setFontSize(8);
-        pdf.setFont("helvetica", "normal");
-        pdf.text(
-          `Page ${i} of ${totalPages} | Finora Financial Analytics`,
-          pageWidth / 2,
-          pageHeight - 10,
-          { align: "center" }
-        );
+        pdf.setTextColor(150, 150, 150);
+        pdf.text(`Finora Financial Report | Page ${i} of ${totalPages}`, pageWidth / 2, pageHeight - 10, { align: "center" });
       }
 
-      // Generate filename
-      const fileName = `Finora_Analytics_${userName.replace(/\s+/g, "_")}_${format(new Date(), "yyyy-MM-dd")}.pdf`;
-      
-      // Save PDF
+      const fileName = `Finora_Report_${format(new Date(), "yyyyMMdd")}.pdf`;
       pdf.save(fileName);
-      
-      toast.success("PDF report generated successfully!", { id: "pdf-export" });
+      toast.success("Premium PDF report downloaded!");
+
     } catch (error) {
-      console.error("Error generating PDF:", error);
-      toast.error("Failed to generate PDF. Please try again.", { id: "pdf-export" });
+      console.error("PDF Export Error:", error);
+      toast.error("Failed to generate PDF.");
     } finally {
       setIsExporting(false);
     }
@@ -676,9 +657,8 @@ export const Analytics = () => {
             </div>
             <p className="text-lg sm:text-xl font-bold text-success mb-1">₹{income.toLocaleString()}</p>
             {incomeChange !== 0 && (
-              <p className={`text-xs flex items-center gap-1 ${
-                incomeChange > 0 ? "text-success" : "text-destructive"
-              }`}>
+              <p className={`text-xs flex items-center gap-1 ${incomeChange > 0 ? "text-success" : "text-destructive"
+                }`}>
                 {incomeChange > 0 ? <ArrowUpRight className="w-3 h-3" /> : <ArrowDownLeft className="w-3 h-3" />}
                 {Math.abs(Math.round(incomeChange))}% vs last {activeTab === "weekly" ? "week" : activeTab === "monthly" ? "month" : "year"}
               </p>
@@ -699,9 +679,8 @@ export const Analytics = () => {
             </div>
             <p className="text-lg sm:text-xl font-bold text-destructive mb-1">₹{expense.toLocaleString()}</p>
             {expenseChange !== 0 && (
-              <p className={`text-xs flex items-center gap-1 ${
-                expenseChange < 0 ? "text-success" : "text-destructive"
-              }`}>
+              <p className={`text-xs flex items-center gap-1 ${expenseChange < 0 ? "text-success" : "text-destructive"
+                }`}>
                 {expenseChange < 0 ? <ArrowDownLeft className="w-3 h-3" /> : <ArrowUpRight className="w-3 h-3" />}
                 {Math.abs(Math.round(expenseChange))}% vs last {activeTab === "weekly" ? "week" : activeTab === "monthly" ? "month" : "year"}
               </p>
@@ -718,33 +697,29 @@ export const Analytics = () => {
         >
           <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
-              <div className={`w-8 h-8 sm:w-9 sm:h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                savings >= 0 ? "bg-success/20" : "bg-destructive/20"
-              }`}>
+              <div className={`w-8 h-8 sm:w-9 sm:h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${savings >= 0 ? "bg-success/20" : "bg-destructive/20"
+                }`}>
                 <PiggyBank className={`w-4 h-4 ${savings >= 0 ? "text-success" : "text-destructive"}`} />
               </div>
               <span className="text-sm font-medium text-foreground">Net Savings</span>
             </div>
-            <span className={`text-sm sm:text-base font-bold ${
-              savings >= 0 ? "text-success" : "text-destructive"
-            }`}>
+            <span className={`text-sm sm:text-base font-bold ${savings >= 0 ? "text-success" : "text-destructive"
+              }`}>
               {savings >= 0 ? "+" : ""}₹{Math.abs(savings).toLocaleString()}
             </span>
           </div>
           <div className="mt-3">
             <div className="flex items-center justify-between mb-1">
               <span className="text-xs text-muted-foreground">Savings Rate</span>
-              <span className={`text-xs font-semibold ${
-                savingsRate >= 20 ? "text-success" : savingsRate >= 10 ? "text-warning" : "text-destructive"
-              }`}>
+              <span className={`text-xs font-semibold ${savingsRate >= 20 ? "text-success" : savingsRate >= 10 ? "text-warning" : "text-destructive"
+                }`}>
                 {savingsRate >= 0 ? Math.round(savingsRate) : 0}%
               </span>
             </div>
             <div className="w-full h-2 bg-secondary rounded-full overflow-hidden">
               <div
-                className={`h-full transition-all duration-500 ${
-                  savingsRate >= 20 ? "bg-success" : savingsRate >= 10 ? "bg-warning" : "bg-destructive"
-                }`}
+                className={`h-full transition-all duration-500 ${savingsRate >= 20 ? "bg-success" : savingsRate >= 10 ? "bg-warning" : "bg-destructive"
+                  }`}
                 style={{ width: `${Math.min(100, Math.max(0, savingsRate))}%` }}
               />
             </div>
@@ -759,11 +734,10 @@ export const Analytics = () => {
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
-              className={`flex-1 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium capitalize transition-all ${
-                activeTab === tab
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
+              className={`flex-1 py-2 sm:py-2.5 rounded-xl text-xs sm:text-sm font-medium capitalize transition-all ${activeTab === tab
+                ? "bg-primary text-primary-foreground"
+                : "text-muted-foreground hover:text-foreground"
+                }`}
             >
               {tab}
             </button>
@@ -773,23 +747,23 @@ export const Analytics = () => {
 
       {/* Income vs Expense Comparison Chart */}
       {comparisonData.length > 0 && (
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.3 }}
           className="px-4 sm:px-5 mb-4 sm:mb-6"
         >
           <div className="glass-card p-4 sm:p-5 rounded-xl">
             <h3 className="font-semibold text-sm sm:text-base mb-4">Income vs Expenses</h3>
-            <div 
+            <div
               ref={chartRef}
               className="h-64 sm:h-72 lg:h-80 rounded-lg p-2 sm:p-3 overflow-hidden"
               style={{ backgroundColor: '#000000' }}
             >
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={comparisonData} margin={{ top: 10, right: 5, left: -10, bottom: 5 }}>
-                  <XAxis 
-                    dataKey="period" 
+                  <XAxis
+                    dataKey="period"
                     axisLine={false}
                     tickLine={false}
                     tick={{ fill: '#ffffff', fontSize: 10, fontWeight: 500 }}
@@ -797,19 +771,19 @@ export const Analytics = () => {
                     textAnchor={comparisonData.length > 7 ? "end" : "middle"}
                     height={comparisonData.length > 7 ? 60 : 30}
                   />
-                  <YAxis 
-                  axisLine={false}
-                  tickLine={false}
+                  <YAxis
+                    axisLine={false}
+                    tickLine={false}
                     tick={{ fill: '#ffffff', fontSize: 10, fontWeight: 500 }}
                     tickFormatter={(value) => {
-                      if (value >= 1000000) return `₹${(value/1000000).toFixed(1)}M`;
-                      if (value >= 1000) return `₹${(value/1000).toFixed(1)}k`;
+                      if (value >= 1000000) return `₹${(value / 1000000).toFixed(1)}M`;
+                      if (value >= 1000) return `₹${(value / 1000).toFixed(1)}k`;
                       return `₹${value}`;
                     }}
                     width={50}
-                />
-                <Tooltip
-                  contentStyle={{
+                  />
+                  <Tooltip
+                    contentStyle={{
                       backgroundColor: 'rgba(255, 255, 255, 0.95)',
                       border: 'none',
                       borderRadius: '8px',
@@ -819,21 +793,21 @@ export const Analytics = () => {
                     formatter={(value: number) => [`₹${value.toLocaleString()}`, '']}
                     labelStyle={{ color: '#000000', marginBottom: '4px', fontWeight: 600 }}
                   />
-                  <Bar 
-                    dataKey="income" 
-                    fill="hsl(142, 76%, 50%)" 
+                  <Bar
+                    dataKey="income"
+                    fill="hsl(142, 76%, 50%)"
                     radius={[6, 6, 0, 0]}
                     name="Income"
-                />
-                <Bar 
-                  dataKey="expense" 
-                    fill="hsl(0, 72%, 51%)" 
-                  radius={[6, 6, 0, 0]}
+                  />
+                  <Bar
+                    dataKey="expense"
+                    fill="hsl(0, 72%, 51%)"
+                    radius={[6, 6, 0, 0]}
                     name="Expenses"
-                />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+                  />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
             <div className="flex items-center justify-center gap-4 mt-4 pt-4 border-t border-border/50">
               <div className="flex items-center gap-2">
                 <div className="w-3 h-3 rounded-full bg-success" />
@@ -844,16 +818,16 @@ export const Analytics = () => {
                 <span className="text-xs text-muted-foreground">Expenses</span>
               </div>
             </div>
-        </div>
-      </motion.div>
+          </div>
+        </motion.div>
       )}
 
       {/* Spending by Category */}
       {pieData.length > 0 && (
-      <motion.div
+        <motion.div
           ref={categoryRef}
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.4 }}
           className="px-4 sm:px-5 mb-4 sm:mb-6"
         >
@@ -866,7 +840,7 @@ export const Analytics = () => {
                   <div key={category.name} className="space-y-1.5">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2 min-w-0 flex-1">
-                        <div 
+                        <div
                           className="w-6 h-6 rounded-lg flex items-center justify-center text-sm flex-shrink-0"
                           style={{ backgroundColor: `${category.color}20` }}
                         >
@@ -882,7 +856,7 @@ export const Analytics = () => {
                     <div className="w-full h-1.5 bg-secondary rounded-full overflow-hidden">
                       <div
                         className="h-full transition-all duration-500 rounded-full"
-                        style={{ 
+                        style={{
                           width: `${percentage}%`,
                           backgroundColor: category.color
                         }}
@@ -892,8 +866,8 @@ export const Analytics = () => {
                 );
               })}
             </div>
-        </div>
-      </motion.div>
+          </div>
+        </motion.div>
       )}
 
       {/* Key Insights */}
@@ -909,7 +883,7 @@ export const Analytics = () => {
             <Target className="w-4 h-4 text-primary" />
             Key Insights
           </h3>
-        <div className="space-y-3">
+          <div className="space-y-3">
             {savingsRate >= 20 && (
               <div className="flex items-start gap-3 p-3 rounded-lg bg-success/10 border border-success/20">
                 <div className="w-6 h-6 rounded-full bg-success/20 flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -923,7 +897,7 @@ export const Analytics = () => {
                 </div>
               </div>
             )}
-            
+
             {savingsRate < 10 && savingsRate >= 0 && (
               <div className="flex items-start gap-3 p-3 rounded-lg bg-warning/10 border border-warning/20">
                 <div className="w-6 h-6 rounded-full bg-warning/20 flex items-center justify-center flex-shrink-0 mt-0.5">
@@ -977,7 +951,7 @@ export const Analytics = () => {
                     Your expenses increased by {Math.round(expenseChange)}% compared to last {activeTab === "weekly" ? "week" : activeTab === "monthly" ? "month" : "year"}. Review your spending patterns.
                   </p>
                 </div>
-                  </div>
+              </div>
             )}
 
             {expenseChange < -10 && (

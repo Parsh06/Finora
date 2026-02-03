@@ -1,11 +1,11 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { 
-  Camera, 
-  Upload, 
-  X, 
-  Check, 
-  Scan, 
+import {
+  Camera,
+  Upload,
+  X,
+  Check,
+  Scan,
   FileText,
   Calendar,
   Building2,
@@ -24,6 +24,8 @@ import { format, parseISO } from "date-fns";
 interface BillScannerProps {
   isOpen: boolean;
   onClose: () => void;
+  onScanComplete?: (data: BillData & { splitBetween: number }) => void;
+  mode?: "standalone" | "return_data";
 }
 
 interface DetectedField {
@@ -102,7 +104,7 @@ const EditableField = ({
   // Handle split field specially
   if (field.isSplitField && field.fieldKey === "splitBetween") {
     const splitAmount = totalAmount && splitBetween ? totalAmount / splitBetween : totalAmount || 0;
-    
+
     return (
       <motion.div
         className="flex items-center justify-between p-3 sm:p-4 rounded-xl bg-muted/20 border border-border/50 gap-2"
@@ -298,10 +300,10 @@ const EditableFieldsList = ({
   return (
     <div className="space-y-2 sm:space-y-3">
       {fields.map((field, index) => (
-        <EditableField 
-          key={field.label} 
-          field={field} 
-          index={index} 
+        <EditableField
+          key={field.label}
+          field={field}
+          index={index}
           onEdit={onFieldEdit}
           splitBetween={splitBetween}
           onSplitChange={onSplitChange}
@@ -312,7 +314,7 @@ const EditableFieldsList = ({
   );
 };
 
-export const BillScanner = ({ isOpen, onClose }: BillScannerProps) => {
+export const BillScanner = ({ isOpen, onClose, onScanComplete, mode = "standalone" }: BillScannerProps) => {
   const { currentUser } = useAuth();
   const [stage, setStage] = useState<"upload" | "scanning" | "preview" | "confirm">("upload");
   const [scanProgress, setScanProgress] = useState(0);
@@ -362,9 +364,9 @@ export const BillScanner = ({ isOpen, onClose }: BillScannerProps) => {
     const validTypes = ["image/jpeg", "image/jpg", "image/png", "image/webp", "image/heic", "image/heif"];
     const fileExtension = file.name.split(".").pop()?.toLowerCase();
     const validExtensions = ["jpg", "jpeg", "png", "webp", "heic", "heif"];
-    
+
     const isValidType = validTypes.includes(file.type) || (fileExtension && validExtensions.includes(fileExtension));
-    
+
     if (!isValidType) {
       toast.error("Please select a valid image file (JPEG, PNG, WEBP, HEIC, HEIF)");
       return;
@@ -409,7 +411,7 @@ export const BillScanner = ({ isOpen, onClose }: BillScannerProps) => {
 
       // Call Gemini API for OCR and data extraction
       const extractedData = await scanBill(file);
-      
+
       // Clear progress interval
       if (progressInterval) {
         clearInterval(progressInterval);
@@ -477,10 +479,10 @@ export const BillScanner = ({ isOpen, onClose }: BillScannerProps) => {
 
       setBillData(extractedData);
       setDetectedFields(fields);
-      
+
       // Show success message
       toast.success("Bill scanned successfully! Review the details below.");
-      
+
       setTimeout(() => {
         setStage("preview");
         setIsProcessing(false);
@@ -490,13 +492,13 @@ export const BillScanner = ({ isOpen, onClose }: BillScannerProps) => {
       if (progressInterval) {
         clearInterval(progressInterval);
       }
-      
+
       const errorMessage = error.message || "Failed to scan bill. Please try again with a clearer image.";
       setError(errorMessage);
       setIsProcessing(false);
       setStage("upload");
       toast.error(errorMessage);
-      
+
       console.error("Bill scanning error:", error);
     }
   };
@@ -569,7 +571,7 @@ export const BillScanner = ({ isOpen, onClose }: BillScannerProps) => {
     }
 
     const updatedBillData = { ...billData };
-    
+
     if (fieldKey === "amount") {
       const numValue = parseFloat(newValue.replace(/[₹,\s]/g, ""));
       if (!isNaN(numValue) && numValue > 0) {
@@ -609,7 +611,7 @@ export const BillScanner = ({ isOpen, onClose }: BillScannerProps) => {
       const categoryKey = Object.entries(categoryLabels).find(
         ([_, label]) => label.toLowerCase() === newValue.toLowerCase()
       )?.[0] || newValue.toLowerCase();
-      
+
       // Validate category exists
       if (categoryLabels[categoryKey] || categoryKey === "other") {
         updatedBillData.category = categoryKey;
@@ -654,6 +656,21 @@ export const BillScanner = ({ isOpen, onClose }: BillScannerProps) => {
   };
 
   const handleConfirm = async () => {
+    // If returning data, validate and call callback
+    if (mode === "return_data" && onScanComplete) {
+      if (!billData) {
+        toast.error("No bill data available");
+        return;
+      }
+      if (!billData.amount || billData.amount <= 0) {
+        toast.error("Invalid amount");
+        return;
+      }
+      onScanComplete({ ...billData, splitBetween });
+      onClose();
+      return;
+    }
+
     if (!currentUser) {
       toast.error("Please sign in to add transactions");
       return;
@@ -693,11 +710,11 @@ export const BillScanner = ({ isOpen, onClose }: BillScannerProps) => {
           const now = new Date();
           const thirtyDaysAgo = new Date();
           thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-          
+
           // Check if date is too far in the future (more than 1 year)
           const oneYearFromNow = new Date();
           oneYearFromNow.setFullYear(oneYearFromNow.getFullYear() + 1);
-          
+
           if (billDate > oneYearFromNow) {
             console.warn("Date is too far in the future, using current date");
             transactionDate = new Date();
@@ -721,7 +738,7 @@ export const BillScanner = ({ isOpen, onClose }: BillScannerProps) => {
 
       // Calculate split amount
       const splitAmount = splitBetween > 1 ? billData.amount / splitBetween : billData.amount;
-      
+
       // Validate split amount
       if (isNaN(splitAmount) || splitAmount <= 0) {
         throw new Error("Invalid split amount calculated");
@@ -729,7 +746,7 @@ export const BillScanner = ({ isOpen, onClose }: BillScannerProps) => {
 
       // Round to 2 decimal places
       const roundedAmount = Math.round(splitAmount * 100) / 100;
-      
+
       // Create transaction with split amount
       const transactionData: any = {
         title: `${billData.merchant || "Bill"} Expense${splitBetween > 1 ? ` (Split ${splitBetween} ways)` : ""}`,
@@ -769,7 +786,7 @@ export const BillScanner = ({ isOpen, onClose }: BillScannerProps) => {
       let transactionId: string;
       try {
         transactionId = await addTransaction(currentUser.uid, transactionData);
-        
+
         console.log("✅ Transaction added successfully!");
         console.log("Transaction ID:", transactionId);
         console.log("Transaction details:", {
@@ -791,7 +808,7 @@ export const BillScanner = ({ isOpen, onClose }: BillScannerProps) => {
         const successMessage = splitBetween > 1
           ? `Expense of ₹${roundedAmount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} added successfully! (Split ${splitBetween} ways from ₹${billData.amount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`
           : `Expense of ₹${billData.amount.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} added successfully!`;
-        
+
         toast.success(successMessage);
 
         // Wait a bit to show success message, then close
@@ -812,7 +829,7 @@ export const BillScanner = ({ isOpen, onClose }: BillScannerProps) => {
         stack: error.stack,
         name: error.name,
       });
-      
+
       // Provide more specific error messages
       let errorMessage = "Failed to add transaction. Please try again.";
       if (error.code === "permission-denied") {
@@ -826,7 +843,7 @@ export const BillScanner = ({ isOpen, onClose }: BillScannerProps) => {
           ? error.message
           : `Error: ${error.message}`;
       }
-      
+
       toast.error(errorMessage, {
         duration: 5000,
         description: "Please check the console for more details.",
@@ -1002,7 +1019,7 @@ export const BillScanner = ({ isOpen, onClose }: BillScannerProps) => {
                       <div className="relative w-24 h-24 sm:w-32 sm:h-32">
                         <motion.div
                           className="absolute inset-0 rounded-2xl border-2 border-primary/30"
-                          animate={{ 
+                          animate={{
                             boxShadow: ["0 0 20px rgba(59, 130, 246, 0.3)", "0 0 40px rgba(59, 130, 246, 0.5)", "0 0 20px rgba(59, 130, 246, 0.3)"]
                           }}
                           transition={{ duration: 1.5, repeat: Infinity }}
@@ -1095,9 +1112,9 @@ export const BillScanner = ({ isOpen, onClose }: BillScannerProps) => {
                         disabled={!billData || isProcessing || billData.amount <= 0 || splitBetween < 1}
                         className="flex-1 py-3 sm:py-4 rounded-xl bg-gradient-to-r from-primary to-accent text-primary-foreground font-semibold shadow-lg shadow-primary/25 text-sm sm:text-base disabled:opacity-50 disabled:cursor-not-allowed"
                       >
-                        {isProcessing 
-                          ? "Adding..." 
-                          : splitBetween > 1 
+                        {isProcessing
+                          ? "Adding..."
+                          : splitBetween > 1
                             ? `Add ₹${((billData?.amount || 0) / splitBetween).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
                             : "Add Expense"
                         }

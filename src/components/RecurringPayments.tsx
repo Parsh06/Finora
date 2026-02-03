@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { 
-  RefreshCw, 
-  Plus, 
-  Calendar, 
-  Bell, 
-  Trash2, 
+import {
+  RefreshCw,
+  Plus,
+  Calendar,
+  Bell,
+  Trash2,
   Edit2,
   Zap,
   Wifi,
@@ -26,12 +26,12 @@ import {
   DollarSign
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { 
-  subscribeToRecurringPayments, 
-  addRecurringPayment, 
-  updateRecurringPayment, 
+import {
+  subscribeToRecurringPayments,
+  addRecurringPayment,
+  updateRecurringPayment,
   deleteRecurringPayment,
-  RecurringPayment as FirestoreRecurringPayment 
+  RecurringPayment as FirestoreRecurringPayment
 } from "@/lib/firestore";
 import { format, parseISO, isBefore, isToday, differenceInDays, startOfDay } from "date-fns";
 import { calculateNextRunDate } from "@/lib/recurring-transactions";
@@ -74,11 +74,12 @@ export const RecurringPayments = () => {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState<"name" | "amount" | "nextDate" | "frequency">("nextDate");
-  
+
   // Form state
   const [formName, setFormName] = useState("");
   const [formAmount, setFormAmount] = useState("");
-  const [formFrequency, setFormFrequency] = useState<"daily" | "weekly" | "monthly" | "yearly">("monthly");
+  const [formFrequency, setFormFrequency] = useState<"daily" | "weekly" | "monthly" | "yearly" | "custom">("monthly");
+  const [formRepeatDays, setFormRepeatDays] = useState<string[]>([]);
   const [formCategory, setFormCategory] = useState("");
   const [formType, setFormType] = useState<"expense" | "income">("expense");
   const [formPaymentMethod, setFormPaymentMethod] = useState("");
@@ -159,11 +160,11 @@ export const RecurringPayments = () => {
       return daysUntil >= 0 && daysUntil <= 7;
     }).length;
 
-    const hasDailyOrWeeklyExpenses = activePayments.some(p => 
+    const hasDailyOrWeeklyExpenses = activePayments.some(p =>
       p.type === "expense" && (p.frequency === "daily" || p.frequency === "weekly")
     );
-    
-    const hasDailyOrWeeklyIncome = activePayments.some(p => 
+
+    const hasDailyOrWeeklyIncome = activePayments.some(p =>
       p.type === "income" && (p.frequency === "daily" || p.frequency === "weekly")
     );
 
@@ -234,6 +235,7 @@ export const RecurringPayments = () => {
     setFormType("expense");
     setFormFrequency("monthly");
     setFormStartDate(format(new Date(), "yyyy-MM-dd"));
+    setFormRepeatDays([]);
     setEditingPayment(null);
   };
 
@@ -242,6 +244,7 @@ export const RecurringPayments = () => {
     setFormName(payment.name);
     setFormAmount(payment.amount.toString());
     setFormFrequency(payment.frequency || "monthly");
+    setFormRepeatDays(payment.repeatDays || []);
     setFormCategory(payment.category);
     setFormType(payment.type || "expense");
     setFormPaymentMethod(payment.paymentMethod || "");
@@ -262,13 +265,19 @@ export const RecurringPayments = () => {
         return;
       }
 
+      if (formFrequency === "custom" && formRepeatDays.length === 0) {
+        toast.error("Please select at least one day for custom recurrence");
+        return;
+      }
+
       const startDate = parseISO(formStartDate);
-      const nextRunDate = calculateNextRunDate(startDate, formFrequency, startDate);
+      const nextRunDate = calculateNextRunDate(startDate, formFrequency, startDate, formRepeatDays);
 
       await addRecurringPayment(currentUser.uid, {
         name: formName,
         amount,
         frequency: formFrequency,
+        repeatDays: formRepeatDays,
         startDate: format(startDate, "yyyy-MM-dd"),
         nextRunDate: format(nextRunDate, "yyyy-MM-dd"),
         category: formCategory,
@@ -303,22 +312,24 @@ export const RecurringPayments = () => {
       }
 
       const startDate = parseISO(formStartDate);
-      
-      // Recalculate nextRunDate if frequency or startDate changed
+
+      // Recalculate nextRunDate if frequency, startDate, or repeatDays changed
       const frequencyChanged = editingPayment.frequency !== formFrequency;
       const startDateChanged = editingPayment.startDate !== format(startDate, "yyyy-MM-dd");
-      
+      const repeatDaysChanged = JSON.stringify(editingPayment.repeatDays?.sort()) !== JSON.stringify(formRepeatDays.sort());
+
       let nextRunDate = parseISO(editingPayment.nextRunDate || editingPayment.nextDate || format(new Date(), "yyyy-MM-dd"));
-      
-      if (frequencyChanged || startDateChanged) {
+
+      if (frequencyChanged || startDateChanged || repeatDaysChanged) {
         // Recalculate next run date based on new frequency/startDate
-        nextRunDate = calculateNextRunDate(startDate, formFrequency, startDate);
+        nextRunDate = calculateNextRunDate(startDate, formFrequency, startDate, formRepeatDays);
       }
 
       await updateRecurringPayment(currentUser.uid, editingPayment.id!, {
         name: formName,
         amount,
         frequency: formFrequency,
+        repeatDays: formRepeatDays,
         startDate: format(startDate, "yyyy-MM-dd"),
         nextRunDate: format(nextRunDate, "yyyy-MM-dd"),
         category: formCategory,
@@ -341,11 +352,11 @@ export const RecurringPayments = () => {
   const filteredAndSortedPayments = useMemo(() => {
     let filtered = payments.filter(p => {
       const status = p.status || (p.isActive ? "active" : "paused");
-      
+
       // Status filter
       if (filter === "active" && status !== "active") return false;
       if (filter === "paused" && status !== "paused") return false;
-      
+
       // Search filter
       if (searchQuery) {
         const query = searchQuery.toLowerCase();
@@ -353,9 +364,9 @@ export const RecurringPayments = () => {
         const matchesCategory = p.category.toLowerCase().includes(query);
         if (!matchesName && !matchesCategory) return false;
       }
-      
-    return true;
-  });
+
+      return true;
+    });
 
     // Sort
     filtered.sort((a, b) => {
@@ -435,7 +446,7 @@ export const RecurringPayments = () => {
             <p className="text-lg sm:text-xl font-bold text-destructive">₹{Math.round(stats.monthlyExpenses).toLocaleString()}</p>
             <p className="text-xs text-muted-foreground mt-0.5">
               {stats.hasDailyOrWeeklyExpenses
-                ? "Projected (daily/weekly converted)" 
+                ? "Projected (daily/weekly converted)"
                 : "Total monthly"}
             </p>
           </motion.div>
@@ -453,7 +464,7 @@ export const RecurringPayments = () => {
             <p className="text-lg sm:text-xl font-bold text-success">₹{Math.round(stats.monthlyIncome).toLocaleString()}</p>
             <p className="text-xs text-muted-foreground mt-0.5">
               {stats.hasDailyOrWeeklyIncome
-                ? "Projected (daily/weekly converted)" 
+                ? "Projected (daily/weekly converted)"
                 : "Total monthly"}
             </p>
           </motion.div>
@@ -520,8 +531,8 @@ export const RecurringPayments = () => {
                   const nextDate = parseISO(payment.nextRunDate || payment.nextDate || new Date().toISOString());
                   const daysUntil = differenceInDays(nextDate, new Date());
                   return (
-                <div
-                  key={payment.id}
+                    <div
+                      key={payment.id}
                       className="flex-shrink-0 flex items-center gap-2 px-2 sm:px-3 py-1.5 sm:py-2 rounded-xl bg-muted/30"
                     >
                       <span className="text-base sm:text-lg">{getCategoryIcon(payment.category, payment.type) || "📦"}</span>
@@ -534,7 +545,7 @@ export const RecurringPayments = () => {
                     </div>
                   );
                 })}
-                </div>
+              </div>
             </div>
           )}
         </motion.div>
@@ -569,11 +580,10 @@ export const RecurringPayments = () => {
             <button
               key={tab}
               onClick={() => setFilter(tab)}
-              className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-medium transition-all whitespace-nowrap ${
-                filter === tab
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-muted/30 text-muted-foreground hover:bg-muted/50"
-              }`}
+              className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs sm:text-sm font-medium transition-all whitespace-nowrap ${filter === tab
+                ? "bg-primary text-primary-foreground"
+                : "bg-muted/30 text-muted-foreground hover:bg-muted/50"
+                }`}
             >
               {tab.charAt(0).toUpperCase() + tab.slice(1)}
             </button>
@@ -619,22 +629,22 @@ export const RecurringPayments = () => {
             )}
           </div>
         ) : (
-        <AnimatePresence>
+          <AnimatePresence>
             {filteredAndSortedPayments.map((payment, index) => {
               const status = payment.status || (payment.isActive ? "active" : "paused");
               const nextDate = parseISO(payment.nextRunDate || payment.nextDate || new Date().toISOString());
               const daysUntil = differenceInDays(nextDate, new Date());
               const isOverdue = isBefore(nextDate, new Date()) && !isToday(nextDate);
-              
+
               return (
-            <motion.div
-              key={payment.id}
+                <motion.div
+                  key={payment.id}
                   className={`glass-card p-3 sm:p-4 rounded-xl ${status !== "active" ? "opacity-60" : ""}`}
-              initial={{ opacity: 0, y: 20 }}
+                  initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: status === "active" ? 1 : 0.6, y: 0 }}
-              transition={{ delay: index * 0.05 }}
-              layout
-            >
+                  transition={{ delay: index * 0.05 }}
+                  layout
+                >
                   <div className="flex items-center justify-between gap-2 sm:gap-3">
                     <div className="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
                       <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl bg-muted/30 flex items-center justify-center flex-shrink-0 text-lg sm:text-xl">
@@ -648,15 +658,23 @@ export const RecurringPayments = () => {
                               Overdue
                             </span>
                           )}
-                  </div>
+                        </div>
                         <div className="flex items-center gap-1.5 sm:gap-2 text-xs text-muted-foreground flex-wrap">
                           <span className={`capitalize ${payment.type === "income" ? "text-success font-medium" : ""}`}>
                             {payment.type || "expense"}
                           </span>
                           <span>•</span>
                           <span className="capitalize">{payment.category}</span>
-                      <span>•</span>
-                      <span className="capitalize">{payment.frequency}</span>
+                          <span>•</span>
+                          <span className="capitalize">{payment.frequency}</span>
+                          {(payment.frequency === "custom" || (payment.repeatDays && payment.repeatDays.length > 0)) && (
+                            <>
+                              <span>•</span>
+                              <span className="text-xs uppercase tracking-tight max-w-[120px] truncate" title={payment.repeatDays?.join(", ")}>
+                                {payment.repeatDays?.join(", ")}
+                              </span>
+                            </>
+                          )}
                           {payment.paymentMethod && (
                             <>
                               <span>•</span>
@@ -673,23 +691,22 @@ export const RecurringPayments = () => {
                       <p className={`text-xs ${isOverdue ? "text-destructive font-medium" : "text-muted-foreground"}`}>
                         {daysUntil === 0 ? "Today" : daysUntil === 1 ? "Tomorrow" : daysUntil < 0 ? `${Math.abs(daysUntil)}d ago` : `In ${daysUntil}d`}
                       </p>
-                </div>
-              </div>
+                    </div>
+                  </div>
 
-              {/* Actions */}
+                  {/* Actions */}
                   <div className="flex items-center justify-between mt-3 sm:mt-4 pt-3 sm:pt-4 border-t border-border/30">
                     <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
-                  <button
+                      <button
                         onClick={() => toggleReminder(payment.id!)}
-                        className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg text-xs font-medium transition-all ${
-                      payment.reminderEnabled
-                        ? "bg-primary/20 text-primary"
-                        : "bg-muted/30 text-muted-foreground"
-                    }`}
-                  >
+                        className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg text-xs font-medium transition-all ${payment.reminderEnabled
+                          ? "bg-primary/20 text-primary"
+                          : "bg-muted/30 text-muted-foreground"
+                          }`}
+                      >
                         <Bell className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                         <span className="hidden sm:inline">Reminder</span>
-                  </button>
+                      </button>
                       <button
                         onClick={() => openEditModal(payment)}
                         className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg bg-muted/30 text-muted-foreground text-xs font-medium hover:bg-primary/20 hover:text-primary transition-all"
@@ -697,33 +714,32 @@ export const RecurringPayments = () => {
                         <Edit2 className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                         <span className="hidden sm:inline">Edit</span>
                       </button>
-                      <button 
+                      <button
                         onClick={() => handleDelete(payment.id!)}
                         className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-3 py-1 sm:py-1.5 rounded-lg bg-muted/30 text-muted-foreground text-xs font-medium hover:bg-destructive/20 hover:text-destructive transition-all"
                       >
                         <Trash2 className="w-3 h-3 sm:w-3.5 sm:h-3.5" />
                         <span className="hidden sm:inline">Delete</span>
-                  </button>
-                </div>
-                <button
+                      </button>
+                    </div>
+                    <button
                       onClick={() => togglePayment(payment.id!)}
-                      className={`relative w-11 h-6 sm:w-12 sm:h-6 rounded-full transition-all flex-shrink-0 ${
-                        status === "active" ? "bg-primary" : "bg-muted/50"
-                  }`}
-                >
-                  <motion.div
-                    className="absolute top-1 w-4 h-4 rounded-full bg-white shadow"
-                        animate={{ 
+                      className={`relative w-11 h-6 sm:w-12 sm:h-6 rounded-full transition-all flex-shrink-0 ${status === "active" ? "bg-primary" : "bg-muted/50"
+                        }`}
+                    >
+                      <motion.div
+                        className="absolute top-1 w-4 h-4 rounded-full bg-white shadow"
+                        animate={{
                           left: status === "active" ? "calc(100% - 18px)" : "4px"
                         }}
-                    transition={{ type: "spring", stiffness: 500, damping: 30 }}
-                  />
-                </button>
-              </div>
-            </motion.div>
+                        transition={{ type: "spring", stiffness: 500, damping: 30 }}
+                      />
+                    </button>
+                  </div>
+                </motion.div>
               );
             })}
-        </AnimatePresence>
+          </AnimatePresence>
         )}
       </div>
 
@@ -768,29 +784,29 @@ export const RecurringPayments = () => {
               <div className="flex-1 overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-muted scrollbar-track-transparent">
                 <div className="space-y-4 pb-4">
                   {/* Name */}
-                <div>
+                  <div>
                     <label className="text-sm text-muted-foreground mb-2 block">Name *</label>
-                  <input
-                    type="text"
+                    <input
+                      type="text"
                       value={formName}
                       onChange={(e) => setFormName(e.target.value)}
-                    placeholder="e.g., Netflix, Gym, Rent"
+                      placeholder="e.g., Netflix, Gym, Rent"
                       className="w-full bg-muted/30 border border-border/50 rounded-xl py-3 px-4 text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
-                  />
-                </div>
+                    />
+                  </div>
 
                   {/* Amount */}
-                <div>
+                  <div>
                     <label className="text-sm text-muted-foreground mb-2 block">Amount *</label>
-                  <input
-                    type="number"
+                    <input
+                      type="number"
                       step="0.01"
                       value={formAmount}
                       onChange={(e) => setFormAmount(e.target.value)}
-                    placeholder="₹0.00"
+                      placeholder="₹0.00"
                       className="w-full bg-muted/30 border border-border/50 rounded-xl py-3 px-4 text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
-                  />
-                </div>
+                    />
+                  </div>
 
                   {/* Type */}
                   <div>
@@ -803,11 +819,10 @@ export const RecurringPayments = () => {
                             setFormType(type);
                             setFormCategory(""); // Reset category when type changes
                           }}
-                          className={`py-3 rounded-xl transition-all text-sm font-medium capitalize ${
-                            formType === type
-                              ? "bg-primary text-primary-foreground shadow-lg"
-                              : "bg-muted/30 text-muted-foreground hover:bg-muted/50"
-                          }`}
+                          className={`py-3 rounded-xl transition-all text-sm font-medium capitalize ${formType === type
+                            ? "bg-primary text-primary-foreground shadow-lg"
+                            : "bg-muted/30 text-muted-foreground hover:bg-muted/50"
+                            }`}
                         >
                           {type}
                         </button>
@@ -823,11 +838,10 @@ export const RecurringPayments = () => {
                         <button
                           key={category.id}
                           onClick={() => setFormCategory(category.id)}
-                          className={`flex flex-col items-center gap-1.5 p-2.5 sm:p-3 rounded-xl transition-all ${
-                            formCategory === category.id
-                              ? "bg-primary text-primary-foreground shadow-lg scale-105"
-                              : "bg-muted/30 text-foreground hover:bg-muted/50"
-                          }`}
+                          className={`flex flex-col items-center gap-1.5 p-2.5 sm:p-3 rounded-xl transition-all ${formCategory === category.id
+                            ? "bg-primary text-primary-foreground shadow-lg scale-105"
+                            : "bg-muted/30 text-foreground hover:bg-muted/50"
+                            }`}
                         >
                           <span className="text-xl sm:text-2xl">{category.icon}</span>
                           <span className="text-xs font-medium text-center leading-tight">{category.label}</span>
@@ -837,24 +851,62 @@ export const RecurringPayments = () => {
                   </div>
 
                   {/* Frequency */}
-                <div>
+                  <div>
                     <label className="text-sm text-muted-foreground mb-2 block">Frequency *</label>
-                    <div className="grid grid-cols-4 gap-2">
-                      {(["daily", "weekly", "monthly", "yearly"] as const).map((freq) => (
-                      <button
-                        key={freq}
+                    <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+                      {(["daily", "weekly", "monthly", "yearly", "custom"] as const).map((freq) => (
+                        <button
+                          key={freq}
                           onClick={() => setFormFrequency(freq)}
-                          className={`py-2.5 sm:py-3 rounded-xl transition-all text-xs sm:text-sm font-medium capitalize ${
-                            formFrequency === freq
-                              ? "bg-primary text-primary-foreground shadow-lg"
-                              : "bg-muted/30 text-muted-foreground hover:bg-muted/50"
-                          }`}
-                      >
-                        {freq}
-                      </button>
-                    ))}
+                          className={`py-2 rounded-xl transition-all text-xs font-medium capitalize ${formFrequency === freq
+                            ? "bg-primary text-primary-foreground shadow-lg"
+                            : "bg-muted/30 text-muted-foreground hover:bg-muted/50"
+                            }`}
+                        >
+                          {freq}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
+
+                  {/* Day Selector */}
+                  {(formFrequency === "weekly" || formFrequency === "daily" || formFrequency === "custom") && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="space-y-2"
+                    >
+                      <label className="text-sm text-muted-foreground block">
+                        Repeat On {(formFrequency === "daily" || formFrequency === "weekly") && <span className="text-xs text-muted-foreground/70">(Optional override)</span>}
+                      </label>
+                      <div className="flex flex-wrap gap-2">
+                        {["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"].map((day) => {
+                          const isSelected = formRepeatDays.includes(day);
+                          return (
+                            <button
+                              key={day}
+                              onClick={() => {
+                                const newDays = isSelected
+                                  ? formRepeatDays.filter((d) => d !== day)
+                                  : [...formRepeatDays, day];
+                                setFormRepeatDays(newDays);
+                              }}
+                              className={`w-9 h-9 rounded-full text-xs font-medium transition-all ${isSelected
+                                  ? "bg-primary text-primary-foreground shadow-md shadow-primary/25"
+                                  : "bg-muted/30 text-muted-foreground hover:bg-muted/50"
+                                }`}
+                            >
+                              {day.charAt(0)}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {formRepeatDays.length === 0 && formFrequency === "custom" && (
+                        <p className="text-xs text-destructive mt-1">Please select at least one day.</p>
+                      )}
+                    </motion.div>
+                  )}
 
                   {/* Start Date */}
                   <div>
@@ -876,11 +928,10 @@ export const RecurringPayments = () => {
                           <button
                             key={method.id}
                             onClick={() => setFormPaymentMethod(method.id)}
-                            className={`flex flex-col items-center gap-1.5 p-2.5 sm:p-3 rounded-xl transition-all ${
-                              formPaymentMethod === method.id
-                                ? "bg-primary text-primary-foreground shadow-lg"
-                                : "bg-muted/30 text-foreground hover:bg-muted/50"
-                            }`}
+                            className={`flex flex-col items-center gap-1.5 p-2.5 sm:p-3 rounded-xl transition-all ${formPaymentMethod === method.id
+                              ? "bg-primary text-primary-foreground shadow-lg"
+                              : "bg-muted/30 text-foreground hover:bg-muted/50"
+                              }`}
                           >
                             <span className="text-xl sm:text-2xl">{method.icon}</span>
                             <span className="text-xs font-medium">{method.label}</span>
@@ -894,7 +945,7 @@ export const RecurringPayments = () => {
 
               {/* Footer Button */}
               <div className="pt-4 border-t border-border/30 flex-shrink-0">
-                <button 
+                <button
                   onClick={handleAddPayment}
                   disabled={!formName || !formAmount || !formCategory}
                   className="w-full py-3 sm:py-4 rounded-xl bg-gradient-to-r from-primary to-accent text-primary-foreground font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-all hover:shadow-lg"
@@ -985,11 +1036,10 @@ export const RecurringPayments = () => {
                               setFormCategory(""); // Reset category if it doesn't exist in new type
                             }
                           }}
-                          className={`py-3 rounded-xl transition-all text-sm font-medium capitalize ${
-                            formType === type
-                              ? "bg-primary text-primary-foreground shadow-lg"
-                              : "bg-muted/30 text-muted-foreground hover:bg-muted/50"
-                          }`}
+                          className={`py-3 rounded-xl transition-all text-sm font-medium capitalize ${formType === type
+                            ? "bg-primary text-primary-foreground shadow-lg"
+                            : "bg-muted/30 text-muted-foreground hover:bg-muted/50"
+                            }`}
                         >
                           {type}
                         </button>
@@ -1005,11 +1055,10 @@ export const RecurringPayments = () => {
                         <button
                           key={category.id}
                           onClick={() => setFormCategory(category.id)}
-                          className={`flex flex-col items-center gap-1.5 p-2.5 sm:p-3 rounded-xl transition-all ${
-                            formCategory === category.id
-                              ? "bg-primary text-primary-foreground shadow-lg scale-105"
-                              : "bg-muted/30 text-foreground hover:bg-muted/50"
-                          }`}
+                          className={`flex flex-col items-center gap-1.5 p-2.5 sm:p-3 rounded-xl transition-all ${formCategory === category.id
+                            ? "bg-primary text-primary-foreground shadow-lg scale-105"
+                            : "bg-muted/30 text-foreground hover:bg-muted/50"
+                            }`}
                         >
                           <span className="text-xl sm:text-2xl">{category.icon}</span>
                           <span className="text-xs font-medium text-center leading-tight">{category.label}</span>
@@ -1021,22 +1070,60 @@ export const RecurringPayments = () => {
                   {/* Frequency */}
                   <div>
                     <label className="text-sm text-muted-foreground mb-2 block">Frequency *</label>
-                    <div className="grid grid-cols-4 gap-2">
-                      {(["daily", "weekly", "monthly", "yearly"] as const).map((freq) => (
+                    <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+                      {(["daily", "weekly", "monthly", "yearly", "custom"] as const).map((freq) => (
                         <button
                           key={freq}
                           onClick={() => setFormFrequency(freq)}
-                          className={`py-2.5 sm:py-3 rounded-xl transition-all text-xs sm:text-sm font-medium capitalize ${
-                            formFrequency === freq
-                              ? "bg-primary text-primary-foreground shadow-lg"
-                              : "bg-muted/30 text-muted-foreground hover:bg-muted/50"
-                          }`}
+                          className={`py-2 rounded-xl transition-all text-xs font-medium capitalize ${formFrequency === freq
+                            ? "bg-primary text-primary-foreground shadow-lg"
+                            : "bg-muted/30 text-muted-foreground hover:bg-muted/50"
+                            }`}
                         >
                           {freq}
                         </button>
                       ))}
                     </div>
                   </div>
+
+                  {/* Day Selector */}
+                  {(formFrequency === "weekly" || formFrequency === "daily" || formFrequency === "custom") && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="space-y-2"
+                    >
+                      <label className="text-sm text-muted-foreground block">
+                        Repeat On {(formFrequency === "daily" || formFrequency === "weekly") && <span className="text-xs text-muted-foreground/70">(Optional override)</span>}
+                      </label>
+                      <div className="flex flex-wrap gap-2">
+                        {["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"].map((day) => {
+                          const isSelected = formRepeatDays.includes(day);
+                          return (
+                            <button
+                              key={day}
+                              onClick={() => {
+                                const newDays = isSelected
+                                  ? formRepeatDays.filter((d) => d !== day)
+                                  : [...formRepeatDays, day];
+                                setFormRepeatDays(newDays);
+                              }}
+                              className={`w-9 h-9 rounded-full text-xs font-medium transition-all ${isSelected
+                                ? "bg-primary text-primary-foreground shadow-md shadow-primary/25"
+                                : "bg-muted/30 text-muted-foreground hover:bg-muted/50"
+                                }`}
+                            >
+                              {day.charAt(0)}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {formRepeatDays.length === 0 && formFrequency === "custom" && (
+                        <p className="text-xs text-destructive mt-1">Please select at least one day.</p>
+                      )}
+                    </motion.div>
+                  )}
 
                   {/* Start Date */}
                   <div>
@@ -1058,11 +1145,10 @@ export const RecurringPayments = () => {
                           <button
                             key={method.id}
                             onClick={() => setFormPaymentMethod(method.id)}
-                            className={`flex flex-col items-center gap-1.5 p-2.5 sm:p-3 rounded-xl transition-all ${
-                              formPaymentMethod === method.id
-                                ? "bg-primary text-primary-foreground shadow-lg"
-                                : "bg-muted/30 text-foreground hover:bg-muted/50"
-                            }`}
+                            className={`flex flex-col items-center gap-1.5 p-2.5 sm:p-3 rounded-xl transition-all ${formPaymentMethod === method.id
+                              ? "bg-primary text-primary-foreground shadow-lg"
+                              : "bg-muted/30 text-foreground hover:bg-muted/50"
+                              }`}
                           >
                             <span className="text-xl sm:text-2xl">{method.icon}</span>
                             <span className="text-xs font-medium">{method.label}</span>
@@ -1076,7 +1162,7 @@ export const RecurringPayments = () => {
 
               {/* Footer Button */}
               <div className="pt-4 border-t border-border/30 flex-shrink-0">
-                <button 
+                <button
                   onClick={handleUpdatePayment}
                   disabled={!formName || !formAmount || !formCategory}
                   className="w-full py-3 sm:py-4 rounded-xl bg-gradient-to-r from-primary to-accent text-primary-foreground font-semibold disabled:opacity-50 disabled:cursor-not-allowed transition-all hover:shadow-lg"

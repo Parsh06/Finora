@@ -51,7 +51,8 @@ export interface RecurringPayment {
   userId: string;
   name: string;
   amount: number;
-  frequency: "daily" | "weekly" | "monthly" | "yearly";
+  frequency: "daily" | "weekly" | "monthly" | "yearly" | "custom";
+  repeatDays?: string[]; // Array of days: "MON", "TUE", etc.
   startDate: string; // Anchor date - ISO format (yyyy-MM-dd)
   nextRunDate: string; // Next date when transaction should be created (yyyy-MM-dd)
   category: string;
@@ -446,6 +447,7 @@ export const addRecurringPayment = async (
     name: payment.name,
     amount: payment.amount,
     frequency: payment.frequency,
+    repeatDays: payment.repeatDays || [],
     startDate: startDateStr,
     nextRunDate: format(nextRunDate, "yyyy-MM-dd"),
     category: payment.category,
@@ -518,6 +520,7 @@ export const updateRecurringPayment = async (
   if (updates.name !== undefined) updateData.name = updates.name;
   if (updates.amount !== undefined) updateData.amount = updates.amount;
   if (updates.frequency !== undefined) updateData.frequency = updates.frequency;
+  if (updates.repeatDays !== undefined) updateData.repeatDays = updates.repeatDays;
   if (updates.startDate !== undefined) updateData.startDate = updates.startDate;
   if (updates.nextRunDate !== undefined) updateData.nextRunDate = updates.nextRunDate;
   if (updates.nextDate !== undefined) updateData.nextDate = updates.nextDate; // Legacy

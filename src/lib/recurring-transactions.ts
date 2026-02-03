@@ -1,19 +1,19 @@
-import { 
-  RecurringPayment, 
-  Transaction, 
-  addTransaction, 
+import {
+  RecurringPayment,
+  Transaction,
+  addTransaction,
   getTransactions,
   recurringPaymentsCollection,
-  updateRecurringPayment 
+  updateRecurringPayment
 } from "./firestore";
-import { 
-  addDays, 
-  addWeeks, 
-  addMonths, 
-  addYears, 
-  format, 
-  parseISO, 
-  startOfMonth, 
+import {
+  addDays,
+  addWeeks,
+  addMonths,
+  addYears,
+  format,
+  parseISO,
+  startOfMonth,
   endOfMonth,
   isSameDay,
   isBefore,
@@ -40,18 +40,45 @@ const setTo4AMIST = (date: Date): Date => {
  */
 export const calculateNextRunDate = (
   startDate: Date,
-  frequency: "daily" | "weekly" | "monthly" | "yearly",
-  currentDate: Date = new Date()
+  frequency: "daily" | "weekly" | "monthly" | "yearly" | "custom",
+  currentDate: Date = new Date(),
+  repeatDays: string[] = [] // ["MON", "TUE", etc.]
 ): Date => {
   const start = startOfDay(startDate);
   const now = startOfDay(currentDate);
   let nextDate: Date;
-  
+
   if (frequency === "daily") {
-    // Next day at 4:00 AM IST
-    nextDate = addDays(now, 1);
+    // If repeatDays is provided and not empty, treat it as custom daily schedule (e.g. weekdays only)
+    if (repeatDays && repeatDays.length > 0) {
+      // Find the next matching day
+      const dayMap: Record<string, number> = { "SUN": 0, "MON": 1, "TUE": 2, "WED": 3, "THU": 4, "FRI": 5, "SAT": 6 };
+      const targetDays = repeatDays.map(d => dayMap[d.toUpperCase()]).filter(d => d !== undefined);
+
+      // Start checking from tomorrow (or today if checking coverage) - rule is next date
+      // Since function is usually called to calculate *next* run date after a creation or run
+      let checkDate = addDays(now, 1);
+
+      // Look ahead up to 7 days
+      for (let i = 0; i < 7; i++) {
+        if (targetDays.includes(checkDate.getDay())) {
+          nextDate = checkDate;
+          break;
+        }
+        checkDate = addDays(checkDate, 1);
+      }
+      // Fallback if something fails
+      if (!nextDate!) nextDate = addDays(now, 1);
+    } else {
+      // Standard daily
+      nextDate = addDays(now, 1);
+    }
   } else if (frequency === "weekly") {
-    // Next week at 4:00 AM IST
+    // If repeatDays is provided, it might mean "Weekly on Mon and Wed" (which is actually custom/multiple days per week)
+    // But usually "Weekly" implies once a week. 
+    // If User selects "Weekly" and ticks multiple days, it acts like Custom.
+    // So we treat "Weekly" with multiple days same as "Custom" or "Daily" with days.
+    // Standard Weekly:
     nextDate = addWeeks(now, 1);
   } else if (frequency === "monthly") {
     // Monthly: startDate + 30 days (exactly 30 days from startDate anchor)
@@ -60,7 +87,7 @@ export const calculateNextRunDate = (
     const periodsPassed = Math.floor(daysSinceStart / 30);
     // Next run is (periodsPassed + 1) * 30 days from startDate
     nextDate = addDays(start, (periodsPassed + 1) * 30);
-    
+
     // If the calculated date is today or in the past, add another 30 days
     if (isBefore(nextDate, now) || isSameDay(nextDate, now)) {
       nextDate = addDays(nextDate, 30);
@@ -68,17 +95,42 @@ export const calculateNextRunDate = (
   } else if (frequency === "yearly") {
     // Use the same day and month as start date
     nextDate = new Date(now.getFullYear(), start.getMonth(), start.getDate());
-    
+
     // If the date is today or in the past, move to next year
     if (isBefore(nextDate, now) || isSameDay(nextDate, now)) {
       nextDate = new Date(now.getFullYear() + 1, start.getMonth(), start.getDate());
     }
+  } else if (frequency === "custom") {
+    // Custom logic: specific days of week
+    if (!repeatDays || repeatDays.length === 0) {
+      // Fallback to daily if no days selected
+      nextDate = addDays(now, 1);
+    } else {
+      const dayMap: Record<string, number> = { "SUN": 0, "MON": 1, "TUE": 2, "WED": 3, "THU": 4, "FRI": 5, "SAT": 6 };
+      const targetDays = repeatDays.map(d => dayMap[d.toUpperCase()]).filter(d => d !== undefined);
+
+      // Start looking from tomorrow
+      let checkDate = addDays(now, 1);
+      let found = false;
+
+      // Look ahead up to 2 weeks to be safe
+      for (let i = 0; i < 14; i++) {
+        if (targetDays.includes(checkDate.getDay())) {
+          nextDate = checkDate;
+          found = true;
+          break;
+        }
+        checkDate = addDays(checkDate, 1);
+      }
+
+      if (!found) nextDate = addDays(now, 1); // Should not happen if repeatDays has valid days
+    }
   } else {
     nextDate = now;
   }
-  
+
   // Return the date (we store dates as strings, 4:00 AM IST is handled during processing)
-  return startOfDay(nextDate);
+  return startOfDay(nextDate!);
 };
 
 /**
@@ -93,7 +145,7 @@ export const transactionExists = async (
   try {
     const transactions = await getTransactions(userId);
     const targetDate = format(startOfDay(date), "yyyy-MM-dd");
-    
+
     return transactions.some((txn) => {
       let txnDate: string;
       if (txn.date instanceof Date) {
@@ -103,7 +155,7 @@ export const transactionExists = async (
       } else {
         return false;
       }
-      
+
       // Check if transaction exists with same recurringPaymentId and date
       return (
         txn.recurringPaymentId === recurringPaymentId &&
@@ -155,7 +207,7 @@ export const createTransactionFromRecurring = async (
 
   const transactionId = await addTransaction(userId, transactionData);
   console.log(`Created transaction for ${recurringPayment.name} on ${format(transactionDate, "yyyy-MM-dd")}`);
-  
+
   return transactionId;
 };
 
@@ -199,7 +251,7 @@ export const processRecurringPayments = async (userId: string): Promise<{
       recurringPaymentsCollection(userId),
       where("status", "==", "active")
     );
-    
+
     const snapshot = await getDocs(q);
     const recurringPayments = snapshot.docs.map((doc) => ({
       id: doc.id,
@@ -224,8 +276,8 @@ export const processRecurringPayments = async (userId: string): Promise<{
     for (const payment of allPayments) {
       try {
         // Skip if cancelled or paused
-        if (payment.status === "cancelled" || payment.status === "paused" || 
-            (payment.isActive === false && payment.status !== "active")) {
+        if (payment.status === "cancelled" || payment.status === "paused" ||
+          (payment.isActive === false && payment.status !== "active")) {
           stats.skipped++;
           continue;
         }
@@ -240,12 +292,12 @@ export const processRecurringPayments = async (userId: string): Promise<{
 
         const nextRunDate = parseISO(nextRunDateStr);
         const nextRunDateDay = startOfDay(nextRunDate);
-        
+
         // Check if it's time to create a transaction
         // Transaction should be created if nextRunDate is today or in the past
         // AND it's after 4:00 AM IST
         const shouldCreate = (isBefore(nextRunDateDay, today) || isSameDay(nextRunDateDay, today)) && isAfter4AMIST();
-        
+
         if (shouldCreate) {
           // Create transaction for the date specified in nextRunDate
           const transactionDate = nextRunDateDay;
@@ -257,19 +309,20 @@ export const processRecurringPayments = async (userId: string): Promise<{
 
           if (transactionId) {
             stats.created++;
-            
+
             // Calculate next run date based on startDate and frequency
-            const startDate = payment.startDate 
+            const startDate = payment.startDate
               ? parseISO(payment.startDate)
               : nextRunDateDay;
-            
+
             // Calculate next run date using the startDate as anchor
             // This ensures monthly payments happen on the same day each month
             // and yearly payments happen on the same date each year
             const newNextRunDate = calculateNextRunDate(
               startDate,
               payment.frequency || "monthly",
-              transactionDate
+              transactionDate,
+              payment.repeatDays
             );
 
             // Update recurring payment with new next run date

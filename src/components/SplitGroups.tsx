@@ -1,6 +1,9 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { useState, useEffect } from "react";
-import { Users, Plus, ArrowRight, Trash2, Receipt, ArrowLeftRight, Pencil, Check } from "lucide-react";
+import { Users, Plus, ArrowRight, Trash2, Receipt, ArrowLeftRight, Pencil, Check, Sparkles, Wand2, Scan } from "lucide-react";
+import { groqJsonCompletion, GroqMessage } from "@/lib/groq-service";
+import { BillScanner } from "@/components/BillScanner";
+import { BillData } from "@/lib/gemini-service";
 import { useAuth } from "@/contexts/AuthContext";
 import {
     subscribeToExpenseGroups,
@@ -101,6 +104,13 @@ export const SplitGroups = () => {
     const [expenseAmount, setExpenseAmount] = useState("");
     const [expensePayer, setExpensePayer] = useState("");
     const [expenseSplitWith, setExpenseSplitWith] = useState<string[]>([]); // Empty = Split with all
+
+    // AI Input State
+    const [aiInput, setAiInput] = useState("");
+    const [isAiParsing, setIsAiParsing] = useState(false);
+
+    // Scanner State
+    const [showScanner, setShowScanner] = useState(false);
 
     const blurClass = isPrivacyEnabled ? "blur-sm select-none" : "";
 
@@ -251,6 +261,77 @@ export const SplitGroups = () => {
         }
     };
 
+    const handleAiParse = async () => {
+        if (!aiInput.trim() || !activeGroup) return;
+        setIsAiParsing(true);
+
+        try {
+            const members = activeGroup.members;
+            const prompt = `
+                Parse expense string: "${aiInput}".
+                Group Members: ${members.join(", ")}.
+                "Me" refers to the current user.
+                
+                Return JSON:
+                {
+                    "description": "short title",
+                    "amount": number,
+                    "paidBy": "exact member name",
+                    "splitWith": ["exact member names"] (empty if everyone)
+                }
+            `;
+
+            const messages: GroqMessage[] = [
+                { role: "system", content: "You are an expense parser. JSON only." },
+                { role: "user", content: prompt }
+            ];
+
+            const result = await groqJsonCompletion<{ description: string; amount: number; paidBy: string; splitWith: string[] }>(messages);
+
+            if (result.description) setExpenseDesc(result.description);
+            if (result.amount) setExpenseAmount(result.amount.toString());
+
+            // Match paidBy
+            if (result.paidBy) {
+                const match = members.find(m => m.toLowerCase() === result.paidBy.toLowerCase());
+                if (match) setExpensePayer(match);
+                else if (result.paidBy.toLowerCase() === "me") setExpensePayer("Me");
+            }
+
+            // Match splitWith
+            if (result.splitWith && Array.isArray(result.splitWith)) {
+                const matchedSplits = result.splitWith.map(s => {
+                    if (s.toLowerCase() === "everyone") return null;
+                    const m = members.find(mem => mem.toLowerCase() === s.toLowerCase());
+                    return m;
+                }).filter(Boolean) as string[];
+
+                if (matchedSplits.length > 0) setExpenseSplitWith(matchedSplits);
+                else setExpenseSplitWith([]); // Reset to all if parsing suggested everyone or failed
+            }
+
+            toast.success("Auto-filled from text!");
+        } catch (error) {
+            console.error(error);
+            toast.error("Could not parse. Try simpler text.");
+        } finally {
+            setIsAiParsing(false);
+        }
+    };
+
+    const handleScanComplete = (data: BillData & { splitBetween: number }) => {
+        if (data.merchant) setExpenseDesc(data.merchant);
+        if (data.amount) setExpenseAmount(data.amount.toString());
+        // Auto-select 'Me' as payer since I'm scanning it
+        setExpensePayer("Me");
+        toast.success("Expense details filled from receipt!");
+        // We could use data.items to populate a more detailed description if needed
+        if (data.items && data.items.length > 0) {
+            const itemSummary = data.items.map(i => i.name).join(", ");
+            if (data.merchant) setExpenseDesc(`${data.merchant} - ${itemSummary.substring(0, 30)}${itemSummary.length > 30 ? "..." : ""}`);
+        }
+    };
+
     // --- Render Functions ---
 
     if (activeGroup) {
@@ -395,6 +476,39 @@ export const SplitGroups = () => {
                                 className="bg-card w-full max-w-md rounded-t-3xl sm:rounded-3xl p-6 h-[80vh] overflow-y-auto"
                             >
                                 <h2 className="text-xl font-bold mb-4">Add Expense</h2>
+
+                                {/* AI Magic Input */}
+                                <div className="mb-6 bg-purple-500/5 p-3 rounded-xl border border-purple-500/20">
+                                    <label className="text-xs font-bold text-purple-500 block mb-2 flex items-center gap-1">
+                                        <Wand2 className="w-3 h-3" /> AI Quick Add
+                                    </label>
+                                    <div className="flex gap-2 mb-2">
+                                        <input
+                                            type="text"
+                                            value={aiInput}
+                                            onChange={e => setAiInput(e.target.value)}
+                                            className="flex-1 bg-background p-2 rounded-lg text-sm outline-none border border-input focus:border-purple-500 transition-colors"
+                                            placeholder='e.g. "Lunch 500 paid by Alice for Bob"'
+                                            onKeyDown={e => e.key === 'Enter' && handleAiParse()}
+                                        />
+                                        <button
+                                            onClick={handleAiParse}
+                                            disabled={isAiParsing || !aiInput}
+                                            className="bg-purple-500 text-white p-2 rounded-lg disabled:opacity-50"
+                                        >
+                                            {isAiParsing ? <div className="animate-spin w-4 h-4 border-2 border-white/50 border-t-white rounded-full" /> : <Sparkles className="w-4 h-4" />}
+                                        </button>
+                                    </div>
+                                    <div className="flex justify-end">
+                                        <button
+                                            onClick={() => setShowScanner(true)}
+                                            className="text-xs flex items-center gap-1 text-purple-500 hover:text-purple-600 font-medium"
+                                        >
+                                            <Scan className="w-3 h-3" /> Scan Receipt instead
+                                        </button>
+                                    </div>
+                                </div>
+
                                 <div className="space-y-4">
                                     <div>
                                         <label className="text-xs text-muted-foreground block mb-1">Description</label>
@@ -609,6 +723,14 @@ export const SplitGroups = () => {
                     </motion.div>
                 )}
             </AnimatePresence>
+
+            {/* Bill Scanner Modal */}
+            <BillScanner
+                isOpen={showScanner}
+                onClose={() => setShowScanner(false)}
+                onScanComplete={handleScanComplete}
+                mode="return_data"
+            />
         </div>
     );
 };
