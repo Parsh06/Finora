@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { 
-  Sparkles, 
-  Send, 
-  TrendingUp, 
-  TrendingDown, 
+import {
+  Sparkles,
+  Send,
+  TrendingUp,
+  TrendingDown,
   AlertTriangle,
   Target,
   Lightbulb,
@@ -16,9 +16,10 @@ import {
   RefreshCw
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { subscribeToTransactions, subscribeToBudgets, Transaction, Budget } from "@/lib/firestore";
+import { subscribeToTransactions, subscribeToBudgets, subscribeToRecurringPayments, Transaction, Budget, RecurringPayment } from "@/lib/firestore";
 import { ragAIService } from "@/lib/rag-ai-service";
 import { toast } from "sonner";
+import ReactMarkdown from 'react-markdown';
 
 interface Message {
   id: string;
@@ -40,7 +41,7 @@ interface Insight {
 export const EnhancedAIInsights = () => {
   const { currentUser, userProfile } = useAuth();
   const userName = userProfile?.name || currentUser?.displayName || "there";
-  
+
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "1",
@@ -55,15 +56,33 @@ export const EnhancedAIInsights = () => {
   const [liveInsights, setLiveInsights] = useState<Insight[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [budgets, setBudgets] = useState<Budget[]>([]);
+  const [recurringPayments, setRecurringPayments] = useState<RecurringPayment[]>([]);
   const [loadingInsights, setLoadingInsights] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  const suggestedPrompts = [
-    "How can I save more?",
-    "What am I overspending on?",
-    "Predict next month's expenses",
-    "Best time to pay bills?"
-  ];
+  const suggestedPrompts = React.useMemo(() => {
+    if (healthScore < 50) {
+      return [
+        "How can I cut expenses?",
+        "Why is my health score low?",
+        "Identify unnecessary subscriptions",
+        "Help me create a strict budget"
+      ];
+    } else if (healthScore > 80) {
+      return [
+        "How to invest my savings?",
+        "Analyze my wealth growth",
+        "Am I ready for big purchases?",
+        "Optimize my tax savings"
+      ];
+    }
+    return [
+      "How can I save more?",
+      "What am I overspending on?",
+      "Predict next month's expenses",
+      "Best time to pay bills?"
+    ];
+  }, [healthScore]);
 
   const mockInsights: Insight[] = [
     {
@@ -124,9 +143,14 @@ export const EnhancedAIInsights = () => {
       setBudgets(data);
     });
 
+    const unsubscribeRecurring = subscribeToRecurringPayments(currentUser.uid, (data) => {
+      setRecurringPayments(data);
+    });
+
     return () => {
       unsubscribeTransactions();
       unsubscribeBudgets();
+      unsubscribeRecurring();
     };
   }, [currentUser]);
 
@@ -152,8 +176,8 @@ export const EnhancedAIInsights = () => {
 
       try {
         setLoadingInsights(true);
-        const insightsData = await ragAIService.generateInsights(transactions, budgets, userName);
-        
+        const insightsData = await ragAIService.generateInsights(transactions, budgets, userName, recurringPayments);
+
         setHealthScore(insightsData.healthScore);
 
         // Map AI insights to component format
@@ -203,7 +227,7 @@ export const EnhancedAIInsights = () => {
 
   const handleSend = async (text: string = input) => {
     if (!text.trim()) return;
-    
+
     if (!currentUser) {
       toast.error("Please sign in to use AI features");
       return;
@@ -235,7 +259,7 @@ export const EnhancedAIInsights = () => {
       }
 
       // Use RAG service to generate response with user's financial data
-      const response = await ragAIService.generateAdvice(text, transactions, budgets, userName);
+      const response = await ragAIService.generateAdvice(text, transactions, budgets, userName, recurringPayments);
 
       const aiMessage: Message = {
         id: (Date.now() + 1).toString(),
@@ -247,14 +271,14 @@ export const EnhancedAIInsights = () => {
       setMessages(prev => [...prev, aiMessage]);
     } catch (error: any) {
       console.error("AI error:", error);
-      
+
       // If API is disabled, don't show error toast - fallback will handle it
       if (error.message?.includes("API_DISABLED")) {
         // Silently use fallback - don't show error
       } else {
         // Provide helpful error message for other errors
         let errorMessage = "I'm having trouble connecting to the AI service right now. ";
-        
+
         if (error.message?.includes("API key")) {
           errorMessage += "Please check the API configuration.";
         } else if (error.message?.includes("network") || error.message?.includes("fetch")) {
@@ -262,24 +286,24 @@ export const EnhancedAIInsights = () => {
         } else {
           errorMessage += "Using fallback analysis based on your data.";
         }
-        
+
         // Only show toast for non-disabled API errors
         if (!error.message?.includes("API_DISABLED")) {
           toast.error(errorMessage);
         }
       }
-      
+
       // Provide a helpful fallback response based on available data
       const lowerText = text.toLowerCase();
       let fallbackResponse = "";
-      
+
       if (transactions.length > 0) {
         const expenses = transactions.filter(t => t.type === "expense");
         const incomes = transactions.filter(t => t.type === "income");
         const totalExpense = expenses.reduce((sum, t) => sum + t.amount, 0);
         const totalIncome = incomes.reduce((sum, t) => sum + t.amount, 0);
         const savings = totalIncome - totalExpense;
-        
+
         // Calculate monthly data
         const now = new Date();
         const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -300,16 +324,16 @@ export const EnhancedAIInsights = () => {
         const monthlyIncome = monthlyIncomes.reduce((sum, t) => sum + t.amount, 0);
         const monthlySavings = monthlyIncome - monthlyExpense;
         const savingsRate = monthlyIncome > 0 ? Math.round((monthlySavings / monthlyIncome) * 100) : 0;
-        
+
         // Calculate category breakdown
         const categorySpending: Record<string, number> = {};
         monthlyExpenses.forEach(e => {
           categorySpending[e.category] = (categorySpending[e.category] || 0) + e.amount;
         });
         const sortedCategories = Object.entries(categorySpending)
-          .sort(([,a], [,b]) => b - a)
+          .sort(([, a], [, b]) => b - a)
           .slice(0, 5);
-        
+
         if (lowerText.includes("spending") || lowerText.includes("spend") || lowerText.includes("what are my spendings")) {
           let categoryBreakdown = "";
           sortedCategories.forEach(([cat, amt], idx) => {
@@ -317,22 +341,22 @@ export const EnhancedAIInsights = () => {
             const categoryLabel = cat.charAt(0).toUpperCase() + cat.slice(1);
             categoryBreakdown += `\n${idx + 1}. ${categoryLabel}: ₹${amt.toLocaleString()} (${percentage}%)`;
           });
-          
+
           fallbackResponse = `Based on your financial data for this month:\n\n💰 Total Spending: ₹${monthlyExpense.toLocaleString()}\n📊 Total Income: ₹${monthlyIncome.toLocaleString()}\n💵 Net Savings: ₹${monthlySavings.toLocaleString()}\n\nSpending by Category:${categoryBreakdown || "\nNo category data available"}\n\n💡 Tip: Your top spending category is ${sortedCategories[0]?.[0] ? sortedCategories[0][0].charAt(0).toUpperCase() + sortedCategories[0][0].slice(1) : "N/A"}. Consider reviewing expenses in this category to optimize your budget.`;
         } else if (lowerText.includes("save") || lowerText.includes("saving") || lowerText.includes("how can i save")) {
           const topCategory = sortedCategories[0];
           const potentialSavings = topCategory ? Math.round(topCategory[1] * 0.1) : 0;
           const topCategoryLabel = topCategory ? topCategory[0].charAt(0).toUpperCase() + topCategory[0].slice(1) : "top category";
-          
+
           fallbackResponse = `Your current financial snapshot:\n\n💵 Monthly Income: ₹${monthlyIncome.toLocaleString()}\n💸 Monthly Expenses: ₹${monthlyExpense.toLocaleString()}\n💰 Current Savings: ₹${monthlySavings.toLocaleString()}\n📈 Savings Rate: ${savingsRate}%\n\nSavings Opportunities:\n\n1. Reduce ${topCategoryLabel} spending - You're spending ₹${topCategory?.[1].toLocaleString() || 0} here. A 10% reduction could save ₹${potentialSavings.toLocaleString()}/month.\n\n2. Review recurring expenses - Check your recurring payments and cancel unused subscriptions.\n\n3. Set a monthly savings goal - Aim to save at least 20% of your income (₹${Math.round(monthlyIncome * 0.2).toLocaleString()}/month).\n\nYour current savings rate is ${savingsRate}%. ${savingsRate < 20 ? "Try to increase it to at least 20% for better financial health." : "Great job maintaining a healthy savings rate!"}`;
         } else {
-          const categoryList = sortedCategories.length > 0 
+          const categoryList = sortedCategories.length > 0
             ? sortedCategories.map(([cat, amt], idx) => {
-                const categoryLabel = cat.charAt(0).toUpperCase() + cat.slice(1);
-                return `${idx + 1}. ${categoryLabel}: ₹${amt.toLocaleString()}`;
-              }).join("\n")
+              const categoryLabel = cat.charAt(0).toUpperCase() + cat.slice(1);
+              return `${idx + 1}. ${categoryLabel}: ₹${amt.toLocaleString()}`;
+            }).join("\n")
             : "No spending data available";
-          
+
           fallbackResponse = `Your Financial Summary\n\n💰 This Month:\n- Income: ₹${monthlyIncome.toLocaleString()}\n- Expenses: ₹${monthlyExpense.toLocaleString()}\n- Savings: ₹${monthlySavings.toLocaleString()} (${savingsRate}%)\n\n📊 Top Spending Categories:\n${categoryList}\n\n💡 Keep tracking your expenses to maintain better financial health!`;
         }
       } else {
@@ -478,30 +502,34 @@ export const EnhancedAIInsights = () => {
               animate={{ opacity: 1, y: 0 }}
             >
               <div className={`flex items-start gap-1.5 sm:gap-2 max-w-[85%] sm:max-w-[80%] ${message.type === "user" ? "flex-row-reverse" : ""}`}>
-                <div className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center flex-shrink-0 ${
-                  message.type === "ai" 
-                    ? "bg-gradient-to-br from-primary to-accent" 
-                    : "bg-muted/50"
-                }`}>
+                <div className={`w-7 h-7 sm:w-8 sm:h-8 rounded-full flex items-center justify-center flex-shrink-0 ${message.type === "ai"
+                  ? "bg-gradient-to-br from-primary to-accent"
+                  : "bg-muted/50"
+                  }`}>
                   {message.type === "ai" ? (
                     <Bot className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-primary-foreground" />
                   ) : (
                     <User className="w-3.5 h-3.5 sm:w-4 sm:h-4 text-muted-foreground" />
                   )}
                 </div>
-                <div className={`px-3 py-2 sm:px-4 sm:py-3 rounded-2xl ${
-                  message.type === "user"
-                    ? "bg-primary text-primary-foreground rounded-tr-md"
-                    : "glass-card rounded-tl-md"
-                }`}>
-                  <p className={`text-xs sm:text-sm whitespace-pre-line break-words ${message.type === "ai" ? "text-foreground" : ""}`}>
-                    {message.content}
-                  </p>
+                <div className={`px-3 py-2 sm:px-4 sm:py-3 rounded-2xl ${message.type === "user"
+                  ? "bg-primary text-primary-foreground rounded-tr-md"
+                  : "glass-card rounded-tl-md"
+                  }`}>
+                  {message.type === "ai" ? (
+                    <div className="prose prose-sm dark:prose-invert max-w-none text-xs sm:text-sm break-words">
+                      <ReactMarkdown>{message.content}</ReactMarkdown>
+                    </div>
+                  ) : (
+                    <p className={`text-xs sm:text-sm whitespace-pre-line break-words`}>
+                      {message.content}
+                    </p>
+                  )}
                 </div>
               </div>
             </motion.div>
           ))}
-          
+
           {isTyping && (
             <motion.div
               className="flex justify-start"
@@ -577,6 +605,6 @@ export const EnhancedAIInsights = () => {
           </button>
         </div>
       </div>
-    </motion.div>
+    </motion.div >
   );
 };

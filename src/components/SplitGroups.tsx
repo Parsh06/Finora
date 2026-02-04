@@ -327,7 +327,7 @@ export const SplitGroups = () => {
         toast.success("Expense details filled from receipt!");
         // We could use data.items to populate a more detailed description if needed
         if (data.items && data.items.length > 0) {
-            const itemSummary = data.items.map(i => i.name).join(", ");
+            const itemSummary = data.items.join(", ");
             if (data.merchant) setExpenseDesc(`${data.merchant} - ${itemSummary.substring(0, 30)}${itemSummary.length > 30 ? "..." : ""}`);
         }
     };
