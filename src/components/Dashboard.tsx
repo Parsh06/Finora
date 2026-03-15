@@ -1,6 +1,7 @@
 import { motion } from "framer-motion";
-import { useState, useEffect } from "react";
-import { TrendingUp, TrendingDown, Wallet, PiggyBank, Sparkles, Scan, Target, RefreshCw, Mic, Trash2, Eye, EyeOff, Users, BarChart3 } from "lucide-react";
+import { useState, useEffect, useMemo } from "react";
+import { TrendingUp, TrendingDown, Wallet, PiggyBank, Sparkles, Scan, Target, RefreshCw, Mic, Trash2, Eye, EyeOff, Users, BarChart3, Proportions, Coins, FileText } from "lucide-react";
+import { FinancialHeatmap } from "./FinancialHeatmap";
 import { FinoraLogo } from "./FinoraLogo";
 import { useAuth } from "@/contexts/AuthContext";
 import { subscribeToTransactions, Transaction, deleteTransaction } from "@/lib/firestore";
@@ -8,11 +9,24 @@ import { format, isToday, isYesterday, differenceInDays, startOfYear, endOfYear,
 import { DateFilter, DateFilterState } from "./DateFilter";
 import { toast } from "sonner";
 import { usePrivacy } from "@/contexts/PrivacyContext";
+import { 
+  subscribeToRecurringPayments, 
+  subscribeToSavingsGoals, 
+  subscribeToBudgets,
+  RecurringPayment,
+  SavingsGoal,
+  Budget 
+} from "@/lib/firestore";
+import { AIChatDrawer } from "./AIChatDrawer";
+import { FinancialContext } from "@/lib/ai-chat-service";
+import { SubscriptionAuditor } from "./SubscriptionAuditor";
+import { analyzeSubscriptions, SubscriptionInsight } from "@/lib/subscription-service";
 
 interface DashboardProps {
   onNavigate?: (tab: string) => void;
   onScanBill?: () => void;
   onVoiceTransaction?: () => void;
+  onImportBankStatement?: () => void;
 }
 
 const categoryIcons: Record<string, string> = {
@@ -35,12 +49,17 @@ const categoryIcons: Record<string, string> = {
   bonus: "🎯",
 };
 
-export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: DashboardProps) => {
+export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction, onImportBankStatement }: DashboardProps) => {
   const { currentUser, userProfile } = useAuth();
   const { isPrivacyEnabled, togglePrivacy } = usePrivacy();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [recurringPayments, setRecurringPayments] = useState<RecurringPayment[]>([]);
+  const [savingsGoals, setSavingsGoals] = useState<SavingsGoal[]>([]);
+  const [budgets, setBudgets] = useState<Budget[]>([]);
   const [loading, setLoading] = useState(true);
   const [dateFilter, setDateFilter] = useState<DateFilterState>({ mode: "all" });
+  const [isAIChatOpen, setIsAIChatOpen] = useState(false);
+  const [ignoredInsights, setIgnoredInsights] = useState<string[]>([]);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -55,7 +74,20 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
     return () => unsubscribe();
   }, [currentUser]);
 
-  // Calculate stats from transactions
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const unsubBills = subscribeToRecurringPayments(currentUser.uid, setRecurringPayments);
+    const unsubGoals = subscribeToSavingsGoals(currentUser.uid, setSavingsGoals);
+    const unsubBudgets = subscribeToBudgets(currentUser.uid, setBudgets);
+
+    return () => {
+      unsubBills();
+      unsubGoals();
+      unsubBudgets();
+    };
+  }, [currentUser]);
+
   const now = new Date();
 
   // Calculate All-Time Stats
@@ -68,6 +100,31 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
     .reduce((sum, t) => sum + t.amount, 0);
 
   const totalBalance = allTimeIncome - allTimeExpense;
+
+  const financialContext: FinancialContext = {
+    balance: totalBalance,
+    upcomingBills: recurringPayments.filter(p => p.status === "active"),
+    budgets,
+    recentTransactions: transactions.slice(0, 10),
+    savingsGoals
+  };
+
+  const subscriptionInsights = useMemo(() => {
+    const rawInsights = analyzeSubscriptions(transactions, recurringPayments);
+    return rawInsights.filter(insight => !ignoredInsights.includes(insight.id));
+  }, [transactions, recurringPayments, ignoredInsights]);
+
+  const handleIgnoreInsight = (id: string) => {
+    setIgnoredInsights(prev => [...prev, id]);
+  };
+
+  const handleAddRecurringFromInsight = (insight: SubscriptionInsight) => {
+    // In a real app, this would open the Add Recurring modal with pre-filled data
+    // For now, we'll navigate and toast
+    onNavigate?.("recurring");
+    toast.info(`Add "${insight.merchant}" in the Recurring Payments page.`);
+    handleIgnoreInsight(insight.id);
+  };
 
   // Filter transactions based on date filter for the list/graphs if needed
   // For the main balance cards, we use all-time stats as requested
@@ -348,6 +405,15 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
               ₹{savingsValue.toLocaleString()}
             </p>
           </div>
+          <div className="glass-card p-3 sm:p-4 rounded-xl col-span-2">
+            <div className="flex items-center gap-2 mb-2">
+              <Coins className="w-4 h-4 text-amber-400 flex-shrink-0" />
+              <span className="text-xs text-muted-foreground truncate">Virtual Vault (Round-Up Savings)</span>
+            </div>
+            <p className={`text-lg sm:text-xl font-bold text-amber-400 ${blurClass}`}>
+              ₹{(userProfile?.totalRoundUpSavings || 0).toLocaleString()}
+            </p>
+          </div>
         </div>
       </motion.div>
 
@@ -436,7 +502,44 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
               <p className="text-[10px] text-muted-foreground truncate">Insights</p>
             </div>
           </button>
+
+          <button
+            onClick={onImportBankStatement}
+            className="glass-card p-3 sm:p-4 flex flex-col items-center gap-2 hover:bg-muted/30 transition-colors rounded-xl active:scale-95 col-span-3 border border-primary/20 bg-primary/5"
+          >
+            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-primary/20 flex items-center justify-center flex-shrink-0">
+              <FileText className="w-4 h-4 sm:w-5 sm:h-5 text-primary" />
+            </div>
+            <div className="text-center min-w-0">
+              <p className="font-medium text-foreground text-xs truncate">Bank Statement Importer</p>
+              <p className="text-[10px] text-muted-foreground truncate">Bulk import PDFs/Images</p>
+            </div>
+          </button>
         </div>
+      </motion.div>
+
+      {/* Financial Heatmap */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.35 }}
+        className="px-4 sm:px-5 mb-4 sm:mb-6"
+      >
+        <FinancialHeatmap transactions={transactions} />
+      </motion.div>
+
+      {/* Subscription Auditor Section */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.35 }}
+        className="px-4 sm:px-5"
+      >
+        <SubscriptionAuditor 
+          insights={subscriptionInsights} 
+          onAddRecurring={handleAddRecurringFromInsight}
+          onIgnore={handleIgnoreInsight}
+        />
       </motion.div>
 
       {/* AI Insight Card */}
@@ -551,6 +654,23 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: Dashbo
           )}
         </div>
       </motion.div>
+      {/* Floating Action Button for AI Chat */}
+      <motion.button
+        onClick={() => setIsAIChatOpen(true)}
+        whileHover={{ scale: 1.1, rotate: 5 }}
+        whileTap={{ scale: 0.9 }}
+        className="fixed bottom-24 right-5 w-14 h-14 rounded-full bg-primary text-primary-foreground flex items-center justify-center shadow-lg shadow-primary/30 z-40 border-2 border-primary-foreground/20"
+      >
+        <Sparkles className="w-6 h-6" />
+        <div className="absolute -top-1 -right-1 w-4 h-4 bg-success rounded-full border-2 border-background animate-pulse" />
+      </motion.button>
+
+      {/* AI Chat Drawer */}
+      <AIChatDrawer 
+        isOpen={isAIChatOpen} 
+        onClose={() => setIsAIChatOpen(false)} 
+        context={financialContext}
+      />
     </div>
   );
 };

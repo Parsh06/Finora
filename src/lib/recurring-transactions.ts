@@ -22,21 +22,12 @@ import {
 } from "date-fns";
 import { getDocs, query, where, Timestamp } from "firebase/firestore";
 
-/**
- * Convert a date to 4:00 AM IST (10:30 PM UTC previous day)
- * IST is UTC+5:30, so 4:00 AM IST = 10:30 PM UTC (previous day)
- * Since we store dates as strings (yyyy-MM-dd), this function is mainly for
- * calculating the next date. The actual time (4:00 AM IST) is handled during processing.
- */
-const setTo4AMIST = (date: Date): Date => {
-  // We just return the date as-is since we store dates as strings
-  // The 4:00 AM IST time is handled in the processing logic
-  return startOfDay(date);
-};
+// We store dates as strings (yyyy-MM-dd).
+// Transactions are created as soon as the day matches nextRunDate.
 
 /**
  * Calculate the next run date based on frequency and start date
- * Returns date set to 4:00 AM IST (10:30 PM UTC previous day)
+ * Returns date as start of day.
  */
 export const calculateNextRunDate = (
   startDate: Date,
@@ -129,7 +120,7 @@ export const calculateNextRunDate = (
     nextDate = now;
   }
 
-  // Return the date (we store dates as strings, 4:00 AM IST is handled during processing)
+  // Return the date (we store dates as strings)
   return startOfDay(nextDate!);
 };
 
@@ -211,29 +202,11 @@ export const createTransactionFromRecurring = async (
   return transactionId;
 };
 
-/**
- * Get current time in IST (UTC+5:30)
- * Returns a Date object representing current IST time
- */
-const getCurrentIST = (): Date => {
-  const now = new Date();
-  // IST is UTC+5:30
-  const istOffset = 5.5 * 60 * 60 * 1000; // 5.5 hours in milliseconds
-  const utcTime = now.getTime() + (now.getTimezoneOffset() * 60 * 1000);
-  return new Date(utcTime + istOffset);
-};
+// Helper to check if a run is due has been simplified into the processRecurringPayments function.
 
 /**
- * Check if current time is after 4:00 AM IST
- */
-const isAfter4AMIST = (): boolean => {
-  const istNow = getCurrentIST();
-  return istNow.getHours() >= 4;
-};
-
-/**
- * Process all active recurring payments and create transactions if needed
- * Runs at 4:00 AM IST daily
+ * Process all active recurring payments and create transactions if needed.
+ * Runs whenever the app is opened or every hour if app stays open.
  */
 export const processRecurringPayments = async (userId: string): Promise<{
   created: number;
@@ -295,8 +268,7 @@ export const processRecurringPayments = async (userId: string): Promise<{
 
         // Check if it's time to create a transaction
         // Transaction should be created if nextRunDate is today or in the past
-        // AND it's after 4:00 AM IST
-        const shouldCreate = (isBefore(nextRunDateDay, today) || isSameDay(nextRunDateDay, today)) && isAfter4AMIST();
+        const shouldCreate = isBefore(nextRunDateDay, today) || isSameDay(nextRunDateDay, today);
 
         if (shouldCreate) {
           // Create transaction for the date specified in nextRunDate

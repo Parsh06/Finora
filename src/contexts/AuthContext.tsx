@@ -10,6 +10,7 @@ import { auth } from "@/lib/firebase";
 import {
   createUserProfile,
   getUserProfile,
+  updateUserProfile as updateProfileDoc,
   UserProfile,
 } from "@/lib/firestore";
 import { useNavigate } from "react-router-dom";
@@ -20,6 +21,7 @@ interface AuthContextType {
   loading: boolean;
   loginWithGoogle: () => Promise<void>;
   logout: () => Promise<void>;
+  updateUserProfile: (updates: Partial<UserProfile>) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -49,6 +51,18 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     setCurrentUser(null);
     setUserProfile(null);
     navigate("/login", { replace: true });
+  };
+
+  const updateUserProfile = async (updates: Partial<UserProfile>) => {
+    if (!currentUser) return;
+    try {
+      await updateProfileDoc(currentUser.uid, updates);
+      // Update local state
+      setUserProfile((prev) => (prev ? { ...prev, ...updates } : null));
+    } catch (error) {
+      console.error("Error updating user profile in context:", error);
+      throw error;
+    }
   };
 
   // 🔑 SINGLE source of truth
@@ -94,6 +108,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         loading,
         loginWithGoogle,
         logout,
+        updateUserProfile,
       }}
     >
       {children}

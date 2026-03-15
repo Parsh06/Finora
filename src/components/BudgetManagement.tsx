@@ -4,8 +4,10 @@ import { Sparkles, Plus, Pencil, Trash2, X, Check } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { subscribeToBudgets, subscribeToTransactions, Budget, Transaction, addBudget, updateBudget, deleteBudget } from "@/lib/firestore";
 import { toast } from "sonner";
+import { format } from "date-fns";
 import { AIBudgetCreator } from "./AIBudgetCreator";
 import { useCategories } from "@/hooks/useCategories";
+import { usePrivacy } from "@/contexts/PrivacyContext";
 
 const getStatusColor = (percentage: number) => {
   if (percentage >= 100) return "bg-destructive";
@@ -21,6 +23,7 @@ const getStatusTextColor = (percentage: number) => {
 
 export const BudgetManagement = () => {
   const { currentUser } = useAuth();
+  const { isPrivacyEnabled } = usePrivacy();
   const { expenseCategories, getCategoryIcon } = useCategories();
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -34,6 +37,7 @@ export const BudgetManagement = () => {
   const [selectedCategory, setSelectedCategory] = useState("");
   const [budgetLimit, setBudgetLimit] = useState("");
   const [budgetPeriod, setBudgetPeriod] = useState<"weekly" | "monthly" | "yearly">("monthly");
+  const [rolloverEnabled, setRolloverEnabled] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
@@ -54,6 +58,66 @@ export const BudgetManagement = () => {
     };
   }, [currentUser]);
 
+  // Automated Rollover Processing
+  useEffect(() => {
+    if (!currentUser || budgets.length === 0 || transactions.length === 0) return;
+
+    const currentMonth = format(new Date(), "yyyy-MM");
+    const currentWeek = format(new Date(), "yyyy-'W'ww");
+
+    const processRollovers = async () => {
+      for (const budget of budgets) {
+        if (!budget.rolloverEnabled) continue;
+
+        const currentPeriodKey = budget.period === "weekly" ? currentWeek : currentMonth;
+        if (budget.lastProcessedPeriod === currentPeriodKey) continue;
+
+        // Period has changed! Calculate surplus from PREVIOUS period
+        const now = new Date();
+        let prevStart: Date;
+        let prevEnd: Date;
+
+        if (budget.period === "weekly") {
+           // Last week
+           const day = now.getDay();
+           const diff = now.getDate() - day + (day === 0 ? -6 : 1) - 7;
+           prevStart = new Date(now.getFullYear(), now.getMonth(), diff, 0, 0, 0);
+           prevEnd = new Date(prevStart);
+           prevEnd.setDate(prevStart.getDate() + 6);
+           prevEnd.setHours(23, 59, 59, 999);
+        } else if (budget.period === "monthly") {
+           // Last month
+           prevStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+           prevEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999);
+        } else continue; // Skip yearly for now or implement if needed
+
+        const prevSpent = transactions
+          .filter(t => {
+            if (t.type !== "expense" || t.category.toLowerCase() !== budget.category.toLowerCase()) return false;
+            const date = t.date instanceof Date ? t.date : (t.date as any).toDate();
+            return date >= prevStart && date <= prevEnd;
+          })
+          .reduce((sum, t) => sum + t.amount, 0);
+
+        const surplus = Math.max(0, (budget.limit + (budget.rolloverAmount || 0)) - prevSpent);
+
+        // Update budget with new rollover amount and mark period as processed
+        try {
+          await updateBudget(currentUser.uid, budget.id!, {
+            rolloverAmount: surplus,
+            lastProcessedPeriod: currentPeriodKey
+          });
+          console.log(`✅ Rolled over ₹${surplus} for ${budget.category} budget`);
+        } catch (err) {
+          console.error("Failed to process rollover:", err);
+        }
+      }
+    };
+
+    processRollovers();
+  }, [currentUser, budgets.length, transactions.length]); 
+  // We use lengths to avoid infinite loops if updateBudget triggers subscription
+
   // Format categories for display
   const formattedCategories = expenseCategories.map(cat => ({
     id: cat.name, // Use name as id for consistency
@@ -65,23 +129,35 @@ export const BudgetManagement = () => {
   // Calculate spent amount for each budget based on transactions
   const budgetsWithSpent = budgets.map((budget) => {
     const now = new Date();
-    const startOfPeriod = new Date();
+    let startOfPeriod: Date;
+    let endOfPeriod: Date;
     
     if (budget.period === "weekly") {
-      startOfPeriod.setDate(now.getDate() - 7);
+      // Start of current week (Monday)
+      const day = now.getDay();
+      const diff = now.getDate() - day + (day === 0 ? -6 : 1);
+      startOfPeriod = new Date(now.setDate(diff));
+      startOfPeriod.setHours(0, 0, 0, 0);
+      endOfPeriod = new Date(startOfPeriod);
+      endOfPeriod.setDate(startOfPeriod.getDate() + 7);
     } else if (budget.period === "monthly") {
-      startOfPeriod.setMonth(now.getMonth() - 1);
+      // Start of current calendar month
+      startOfPeriod = new Date(now.getFullYear(), now.getMonth(), 1);
+      endOfPeriod = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59);
     } else {
-      startOfPeriod.setFullYear(now.getFullYear() - 1);
+      // Start of current year
+      startOfPeriod = new Date(now.getFullYear(), 0, 1);
+      endOfPeriod = new Date(now.getFullYear(), 11, 31, 23, 59, 59);
     }
 
     const spent = transactions
       .filter((t) => {
-        const date = t.date instanceof Date ? t.date : t.date.toDate();
+        const date = t.date instanceof Date ? t.date : (t.date as any).toDate();
         return (
           t.type === "expense" &&
           t.category.toLowerCase() === budget.category.toLowerCase() &&
-          date >= startOfPeriod
+          date >= startOfPeriod &&
+          date <= endOfPeriod
         );
       })
       .reduce((sum, t) => sum + t.amount, 0);
@@ -121,7 +197,11 @@ export const BudgetManagement = () => {
       
       return {
         title: "Budget Alert",
-        message: `Your ${categoryLabel} budget is over limit by ₹${overAmount.toLocaleString()}. Consider reducing spending or adjusting your budget.`,
+        message: (
+          <span>
+            Your {categoryLabel} budget is over limit by <span className={blurClass}>₹{overAmount.toLocaleString()}</span>. Consider reducing spending or adjusting your budget.
+          </span>
+        ),
         type: "warning" as const
       };
     }
@@ -138,7 +218,11 @@ export const BudgetManagement = () => {
       
       return {
         title: "Budget Warning",
-        message: `Your ${categoryLabel} budget is ${Math.round((warningBudget.spent / warningBudget.limit) * 100)}% used. Only ₹${remaining.toLocaleString()} remaining.`,
+        message: (
+          <span>
+            Your {categoryLabel} budget is {Math.round((warningBudget.spent / warningBudget.limit) * 100)}% used. Only <span className={blurClass}>₹{remaining.toLocaleString()}</span> remaining.
+          </span>
+        ),
         type: "warning" as const
       };
     }
@@ -176,6 +260,7 @@ export const BudgetManagement = () => {
     setSelectedCategory(budget.category);
     setBudgetLimit(budget.limit.toString());
     setBudgetPeriod(budget.period);
+    setRolloverEnabled(budget.rolloverEnabled || false);
     setShowEditModal(true);
   };
 
@@ -205,6 +290,9 @@ export const BudgetManagement = () => {
           limit: limitNum,
           spent: 0,
           period: budgetPeriod,
+          rolloverEnabled: rolloverEnabled,
+          rolloverAmount: 0,
+          lastProcessedPeriod: format(new Date(), budgetPeriod === "weekly" ? "yyyy-'W'ww" : "yyyy-MM"),
         });
         toast.success("Budget added successfully!");
         setShowAddModal(false);
@@ -215,6 +303,7 @@ export const BudgetManagement = () => {
           icon: icon,
           limit: limitNum,
           period: budgetPeriod,
+          rolloverEnabled: rolloverEnabled,
         });
         toast.success("Budget updated successfully!");
         setShowEditModal(false);
@@ -254,6 +343,8 @@ export const BudgetManagement = () => {
     setBudgetLimit("");
     setBudgetPeriod("monthly");
   };
+
+  const blurClass = isPrivacyEnabled ? "blur-md select-none transition-all duration-300" : "transition-all duration-300";
 
   return (
     <div className="min-h-screen pb-24">
@@ -299,9 +390,9 @@ export const BudgetManagement = () => {
               <div className="min-w-0 flex-1">
                 <p className="text-xs sm:text-sm text-muted-foreground">Total Budget Overview</p>
                 <p className="text-xl sm:text-2xl font-bold truncate">
-                  ₹{totalSpent.toLocaleString()}{" "}
+                  <span className={blurClass}>₹{totalSpent.toLocaleString()}</span>{" "}
                   <span className="text-muted-foreground font-normal text-sm sm:text-base">
-                    / ₹{totalBudget.toLocaleString()}
+                    / <span className={blurClass}>₹{totalBudget.toLocaleString()}</span>
                   </span>
                 </p>
                 <p className="text-xs text-muted-foreground mt-1">
@@ -322,7 +413,7 @@ export const BudgetManagement = () => {
             </div>
             {overallPercentage >= 100 && (
               <p className="text-xs text-destructive mt-2">
-                Over total budget by ₹{(totalSpent - totalBudget).toLocaleString()}
+                Over total budget by <span className={blurClass}>₹{(totalSpent - totalBudget).toLocaleString()}</span>
               </p>
             )}
           </div>
@@ -405,7 +496,8 @@ export const BudgetManagement = () => {
         ) : (
           <div className="space-y-4">
             {budgetsWithSpent.map((budget, index) => {
-            const percentage = Math.round((budget.spent / budget.limit) * 100);
+            const effectiveLimit = budget.limit + (budget.rolloverAmount || 0);
+            const percentage = Math.round((budget.spent / effectiveLimit) * 100);
             const isOverBudget = percentage >= 100;
             const isWarning = percentage >= 80 && percentage < 100;
 
@@ -447,7 +539,10 @@ export const BudgetManagement = () => {
 
                 <div className="flex items-center justify-between mb-2 text-xs sm:text-sm gap-2">
                   <span className="text-muted-foreground truncate min-w-0">
-                    ₹{budget.spent.toLocaleString()} / ₹{budget.limit.toLocaleString()}
+                    <span className={blurClass}>₹{budget.spent.toLocaleString()}</span> / <span className={blurClass}>₹{effectiveLimit.toLocaleString()}</span>
+                    {budget.rolloverAmount && budget.rolloverAmount > 0 && (
+                      <span className="text-[10px] text-success ml-1">(+<span className={blurClass}>₹{budget.rolloverAmount.toLocaleString()}</span> rollover)</span>
+                    )}
                   </span>
                   <span className={`font-medium flex-shrink-0 ${getStatusTextColor(percentage)}`}>
                     {percentage}%
@@ -466,7 +561,7 @@ export const BudgetManagement = () => {
 
                 {isOverBudget && (
                   <p className="text-xs text-destructive mt-2">
-                    Over budget by ₹{(budget.spent - budget.limit).toLocaleString()}
+                    Over budget by <span className={blurClass}>₹{(budget.spent - effectiveLimit).toLocaleString()}</span>
                   </p>
                 )}
               </motion.div>
@@ -571,6 +666,31 @@ export const BudgetManagement = () => {
                       </button>
                     ))}
                   </div>
+                </div>
+
+
+                {/* Rollover Toggle */}
+                <div className="glass-card p-4 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-success/20 flex items-center justify-center">
+                      <Plus className="w-5 h-5 text-success" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold">Enable Roll-over</p>
+                      <p className="text-xs text-muted-foreground">Carry forward savings to next month</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setRolloverEnabled(!rolloverEnabled)}
+                    className={`w-12 h-6 rounded-full p-1 transition-colors ${
+                      rolloverEnabled ? "bg-primary" : "bg-muted"
+                    }`}
+                  >
+                    <motion.div
+                      animate={{ x: rolloverEnabled ? 24 : 0 }}
+                      className="w-4 h-4 rounded-full bg-white shadow-sm"
+                    />
+                  </button>
                 </div>
 
                 {/* Save Button */}

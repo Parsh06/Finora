@@ -3,48 +3,20 @@ import { useAuth } from "@/contexts/AuthContext";
 import { processRecurringPayments } from "@/lib/recurring-transactions";
 
 /**
- * Get current time in IST (UTC+5:30)
+ * Calculate milliseconds until next midnight
  */
-const getCurrentIST = (): Date => {
+const getMsUntilMidnight = (): number => {
   const now = new Date();
-  const istOffset = 5.5 * 60 * 60 * 1000; // 5.5 hours in milliseconds
-  const utcTime = now.getTime() + (now.getTimezoneOffset() * 60 * 1000);
-  return new Date(utcTime + istOffset);
+  const nextMidnight = new Date(now);
+  nextMidnight.setDate(nextMidnight.getDate() + 1);
+  nextMidnight.setHours(0, 0, 0, 0);
+  
+  return nextMidnight.getTime() - now.getTime();
 };
 
 /**
- * Check if current time is after 4:00 AM IST
- */
-const isAfter4AMIST = (): boolean => {
-  const istNow = getCurrentIST();
-  return istNow.getHours() >= 4;
-};
-
-/**
- * Calculate milliseconds until next 4:00 AM IST
- */
-const getMsUntil4AMIST = (): number => {
-  const istNow = getCurrentIST();
-  const next4AM = new Date(istNow);
-  
-  if (istNow.getHours() >= 4) {
-    // Already past 4 AM today, schedule for tomorrow
-    next4AM.setDate(next4AM.getDate() + 1);
-  }
-  next4AM.setHours(4, 0, 0, 0);
-  
-  // Convert back to UTC for setTimeout
-  const utcOffset = 5.5 * 60 * 60 * 1000;
-  const utcTime = next4AM.getTime() - utcOffset;
-  const now = new Date();
-  const nowUtc = now.getTime() + (now.getTimezoneOffset() * 60 * 1000);
-  
-  return utcTime - nowUtc;
-};
-
-/**
- * Hook to automatically process recurring payments daily at 4:00 AM IST
- * Runs once per day when the app is open
+ * Hook to automatically process recurring payments daily
+ * Runs whenever the app is open and refreshes at midnight
  */
 export const useRecurringTransactions = () => {
   const { currentUser } = useAuth();
@@ -58,11 +30,6 @@ export const useRecurringTransactions = () => {
       // Prevent concurrent processing
       if (processingRef.current) return;
       
-      // Only process if it's after 4:00 AM IST
-      if (!isAfter4AMIST()) {
-        return;
-      }
-      
       const today = new Date().toDateString();
       
       // Skip if already processed today
@@ -73,43 +40,46 @@ export const useRecurringTransactions = () => {
       processingRef.current = true;
       
       try {
+        console.log(`🕒 [Recurring] Checking payments for ${today}...`);
         const stats = await processRecurringPayments(currentUser.uid);
         
         if (stats.created > 0) {
-          console.log(`✅ Created ${stats.created} recurring transaction(s) at 4:00 AM IST`);
+          console.log(`✅ [Recurring] Created ${stats.created} transaction(s)`);
+        } else {
+          console.log(`ℹ️ [Recurring] Already up to date (skipped ${stats.skipped})`);
         }
         
         lastProcessedDateRef.current = today;
       } catch (error) {
-        console.error("Error processing recurring transactions:", error);
+        console.error("❌ [Recurring] Error processing transactions:", error);
       } finally {
         processingRef.current = false;
       }
     };
 
-    // Process immediately if it's after 4:00 AM IST
+    // Process immediately on launch
     checkAndProcess();
 
-    // Set up interval to check every hour (in case user keeps app open)
+    // Set up interval to check every hour (in case user keeps app open over midnight)
     const interval = setInterval(() => {
       checkAndProcess();
-    }, 60 * 60 * 1000); // Every hour
+    }, 60 * 60 * 1000);
 
-    // Schedule next check at 4:00 AM IST
-    const msUntil4AM = getMsUntil4AMIST();
-    const fourAMTimeout = setTimeout(() => {
+    // Schedule next check at exactly midnight
+    const msUntilMidnight = getMsUntilMidnight();
+    const midnightTimeout = setTimeout(() => {
       checkAndProcess();
-      // Then set up daily interval to check at 4 AM
+      // Then set up daily interval to check at midnight
       const dailyInterval = setInterval(() => {
         checkAndProcess();
-      }, 24 * 60 * 60 * 1000); // Every 24 hours
+      }, 24 * 60 * 60 * 1000);
       
       return () => clearInterval(dailyInterval);
-    }, Math.max(msUntil4AM, 0));
+    }, Math.max(msUntilMidnight, 0));
 
     return () => {
       clearInterval(interval);
-      clearTimeout(fourAMTimeout);
+      clearTimeout(midnightTimeout);
     };
   }, [currentUser]);
 };

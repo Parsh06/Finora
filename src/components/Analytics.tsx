@@ -10,11 +10,13 @@ import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
 import { toast } from "sonner";
 import { useCategories } from "@/hooks/useCategories";
+import { usePrivacy } from "@/contexts/PrivacyContext";
 
 type TabType = "weekly" | "monthly" | "yearly";
 
 export const Analytics = () => {
   const { currentUser, userProfile } = useAuth();
+  const { isPrivacyEnabled } = usePrivacy();
   const { categories, getCategoryIcon, getCategoryColor } = useCategories();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
@@ -616,6 +618,7 @@ export const Analytics = () => {
   }
 
   const { income, expense, savings, savingsRate, pieData, comparisonData, topCategories, incomeChange, expenseChange } = analyticsData;
+  const blurClass = isPrivacyEnabled ? "blur-md select-none transition-all duration-300" : "transition-all duration-300";
 
   return (
     <div className="min-h-screen pb-24 bg-background">
@@ -655,7 +658,7 @@ export const Analytics = () => {
               </div>
               <span className="text-xs text-muted-foreground truncate">Income</span>
             </div>
-            <p className="text-lg sm:text-xl font-bold text-success mb-1">₹{income.toLocaleString()}</p>
+            <p className={`text-lg sm:text-xl font-bold text-success mb-1 ${blurClass}`}>₹{income.toLocaleString()}</p>
             {incomeChange !== 0 && (
               <p className={`text-xs flex items-center gap-1 ${incomeChange > 0 ? "text-success" : "text-destructive"
                 }`}>
@@ -677,7 +680,7 @@ export const Analytics = () => {
               </div>
               <span className="text-xs text-muted-foreground truncate">Expenses</span>
             </div>
-            <p className="text-lg sm:text-xl font-bold text-destructive mb-1">₹{expense.toLocaleString()}</p>
+            <p className={`text-lg sm:text-xl font-bold text-destructive mb-1 ${blurClass}`}>₹{expense.toLocaleString()}</p>
             {expenseChange !== 0 && (
               <p className={`text-xs flex items-center gap-1 ${expenseChange < 0 ? "text-success" : "text-destructive"
                 }`}>
@@ -704,7 +707,7 @@ export const Analytics = () => {
               <span className="text-sm font-medium text-foreground">Net Savings</span>
             </div>
             <span className={`text-sm sm:text-base font-bold ${savings >= 0 ? "text-success" : "text-destructive"
-              }`}>
+              } ${blurClass}`}>
               {savings >= 0 ? "+" : ""}₹{Math.abs(savings).toLocaleString()}
             </span>
           </div>

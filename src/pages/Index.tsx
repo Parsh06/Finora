@@ -17,6 +17,7 @@ import { SplitGroups } from "@/components/SplitGroups";
 import { SettingsProfile } from "@/components/SettingsProfile";
 import { BottomNav } from "@/components/BottomNav";
 import { Preloader } from "@/components/Preloader";
+import { BankStatementImporter } from "@/components/BankStatementImporter";
 
 import { useAuth } from "@/contexts/AuthContext";
 import { useRecurringTransactions } from "@/hooks/useRecurringTransactions";
@@ -30,6 +31,7 @@ const Index = () => {
   const [showAddTransaction, setShowAddTransaction] = useState(false);
   const [showBillScanner, setShowBillScanner] = useState(false);
   const [showVoiceTransaction, setShowVoiceTransaction] = useState(false);
+  const [showBankImporter, setShowBankImporter] = useState(false);
 
   // Auto-process recurring transactions
   useRecurringTransactions();
@@ -86,6 +88,7 @@ const Index = () => {
             onNavigate={setActiveTab}
             onScanBill={() => setShowBillScanner(true)}
             onVoiceTransaction={() => setShowVoiceTransaction(true)}
+            onImportBankStatement={() => setShowBankImporter(true)}
           />
         );
       case "analytics":
@@ -135,6 +138,11 @@ const Index = () => {
       <VoiceTransaction
         isOpen={showVoiceTransaction}
         onClose={() => setShowVoiceTransaction(false)}
+      />
+
+      <BankStatementImporter
+        isOpen={showBankImporter}
+        onClose={() => setShowBankImporter(false)}
       />
     </div>
   );

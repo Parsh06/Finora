@@ -1,6 +1,7 @@
 import { motion } from "framer-motion";
 import { useState } from "react";
 import { Sparkles, Send, MessageCircle, TrendingDown, AlertTriangle, Award } from "lucide-react";
+import { usePrivacy } from "@/contexts/PrivacyContext";
 
 interface Message {
   id: string;
@@ -27,6 +28,7 @@ const initialMessages: Message[] = [
 
 export const AIInsights = () => {
   const [messages, setMessages] = useState<Message[]>(initialMessages);
+  const { isPrivacyEnabled } = usePrivacy();
   const [input, setInput] = useState("");
   const [isTyping, setIsTyping] = useState(false);
 
@@ -67,6 +69,8 @@ export const AIInsights = () => {
     setMessages((prev) => [...prev, aiMessage]);
   };
 
+  const blurClass = isPrivacyEnabled ? "blur-md select-none transition-all duration-300" : "transition-all duration-300";
+
   return (
     <div className="min-h-screen flex flex-col pb-24">
       {/* Header */}
@@ -91,7 +95,7 @@ export const AIInsights = () => {
             <div>
               <p className="text-sm text-muted-foreground mb-1">Financial Health Score</p>
               <div className="flex items-baseline gap-1">
-                <span className="text-3xl font-bold text-primary">{healthScore}</span>
+                <span className={`text-3xl font-bold text-primary ${blurClass}`}>{healthScore}</span>
                 <span className="text-muted-foreground">/100</span>
               </div>
             </div>
@@ -168,7 +172,7 @@ export const AIInsights = () => {
                   <span className="text-xs font-medium text-primary">Finora AI</span>
                 </div>
               )}
-              <p className="text-sm whitespace-pre-line">{message.content}</p>
+              <p className={`text-sm whitespace-pre-line ${blurClass}`}>{message.content}</p>
             </div>
           </motion.div>
         ))}

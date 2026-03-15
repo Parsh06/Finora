@@ -33,10 +33,11 @@ import {
   deleteRecurringPayment,
   RecurringPayment as FirestoreRecurringPayment
 } from "@/lib/firestore";
-import { format, parseISO, isBefore, isToday, differenceInDays, startOfDay } from "date-fns";
+import { format, parseISO, isBefore, isToday, differenceInDays, startOfDay, addDays } from "date-fns";
 import { calculateNextRunDate } from "@/lib/recurring-transactions";
 import { toast } from "sonner";
 import { useCategories } from "@/hooks/useCategories";
+import { usePrivacy } from "@/contexts/PrivacyContext";
 
 const iconMap: Record<string, React.ElementType> = {
   Film,
@@ -65,6 +66,7 @@ const paymentMethods = [
 
 export const RecurringPayments = () => {
   const { currentUser } = useAuth();
+  const { isPrivacyEnabled } = usePrivacy();
   const { expenseCategories, incomeCategories, getCategoryIcon } = useCategories();
   const [payments, setPayments] = useState<FirestoreRecurringPayment[]>([]);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -84,6 +86,7 @@ export const RecurringPayments = () => {
   const [formType, setFormType] = useState<"expense" | "income">("expense");
   const [formPaymentMethod, setFormPaymentMethod] = useState("");
   const [formStartDate, setFormStartDate] = useState(format(new Date(), "yyyy-MM-dd"));
+  const [formNextRunDate, setFormNextRunDate] = useState(format(new Date(), "yyyy-MM-dd"));
 
   // Format categories for display
   const formattedExpenseCategories = expenseCategories.map(cat => ({
@@ -112,6 +115,21 @@ export const RecurringPayments = () => {
 
     return () => unsubscribe();
   }, [currentUser]);
+
+  // Auto-calculate nextRunDate when start date or frequency changes in the form
+  useEffect(() => {
+    // Only auto-update if we are in the Add modal or if we haven't manually changed the date significantly
+    // For simplicity, just auto-compute when form details change
+    try {
+      const startDate = parseISO(formStartDate);
+      const computedNextDate = calculateNextRunDate(startDate, formFrequency, startDate, formRepeatDays);
+      setFormNextRunDate(format(computedNextDate, "yyyy-MM-dd"));
+    } catch (e) {
+      console.error("Error auto-calculating next run date:", e);
+    }
+  }, [formStartDate, formFrequency, formRepeatDays]);
+
+  const blurClass = isPrivacyEnabled ? "blur-md select-none transition-all duration-300" : "transition-all duration-300";
 
   // Get active payments
   const activePayments = useMemo(() => {
@@ -188,10 +206,30 @@ export const RecurringPayments = () => {
     try {
       const currentStatus = payment.status || (payment.isActive ? "active" : "paused");
       const newStatus = currentStatus === "active" ? "paused" : "active";
-      await updateRecurringPayment(currentUser.uid, id, {
-        status: newStatus,
-      });
-      toast.success(newStatus === "active" ? "Payment activated" : "Payment paused");
+      const today = startOfDay(new Date());
+
+      if (newStatus === "paused") {
+        // Pausing: Store remaining days until next trigger
+        const nextDate = parseISO(payment.nextRunDate || payment.nextDate || format(today, "yyyy-MM-dd"));
+        const remainingDays = Math.max(0, differenceInDays(startOfDay(nextDate), today));
+
+        await updateRecurringPayment(currentUser.uid, id, {
+          status: newStatus,
+          pausedAt: format(today, "yyyy-MM-dd"),
+          remainingDays: remainingDays
+        });
+        toast.info(`Paused: ${remainingDays} days were pending`);
+      } else {
+        // Resuming: Calculate new next run date based on preserved remaining days
+        const remainingDays = payment.remainingDays || 0;
+        const newNextRunDate = addDays(today, remainingDays);
+
+        await updateRecurringPayment(currentUser.uid, id, {
+          status: newStatus,
+          nextRunDate: format(newNextRunDate, "yyyy-MM-dd")
+        });
+        toast.success(`Resumed: Next trigger in ${remainingDays} days`);
+      }
     } catch (error) {
       console.error("Error toggling payment:", error);
       toast.error("Failed to update payment");
@@ -235,6 +273,7 @@ export const RecurringPayments = () => {
     setFormType("expense");
     setFormFrequency("monthly");
     setFormStartDate(format(new Date(), "yyyy-MM-dd"));
+    setFormNextRunDate(format(new Date(), "yyyy-MM-dd"));
     setFormRepeatDays([]);
     setEditingPayment(null);
   };
@@ -249,6 +288,7 @@ export const RecurringPayments = () => {
     setFormType(payment.type || "expense");
     setFormPaymentMethod(payment.paymentMethod || "");
     setFormStartDate(payment.startDate || format(new Date(), "yyyy-MM-dd"));
+    setFormNextRunDate(payment.nextRunDate || payment.nextDate || format(new Date(), "yyyy-MM-dd"));
     setShowEditModal(true);
   };
 
@@ -271,7 +311,7 @@ export const RecurringPayments = () => {
       }
 
       const startDate = parseISO(formStartDate);
-      const nextRunDate = calculateNextRunDate(startDate, formFrequency, startDate, formRepeatDays);
+      const nextRunDate = parseISO(formNextRunDate);
 
       await addRecurringPayment(currentUser.uid, {
         name: formName,
@@ -318,11 +358,15 @@ export const RecurringPayments = () => {
       const startDateChanged = editingPayment.startDate !== format(startDate, "yyyy-MM-dd");
       const repeatDaysChanged = JSON.stringify(editingPayment.repeatDays?.sort()) !== JSON.stringify(formRepeatDays.sort());
 
-      let nextRunDate = parseISO(editingPayment.nextRunDate || editingPayment.nextDate || format(new Date(), "yyyy-MM-dd"));
+      let nextRunDate = parseISO(formNextRunDate);
 
       if (frequencyChanged || startDateChanged || repeatDaysChanged) {
-        // Recalculate next run date based on new frequency/startDate
-        nextRunDate = calculateNextRunDate(startDate, formFrequency, startDate, formRepeatDays);
+        // Recalculate next run date based on new frequency/startDate IF the user didn't manually edit the nextRunDate input
+        // Since we have a manual input now, we only recalculate if the user hasn't explicitly set a different one
+        // For simplicity, if they change the anchor fields, we suggest a new next date unless they manually edited it.
+        if (formNextRunDate === (editingPayment.nextRunDate || editingPayment.nextDate)) {
+          nextRunDate = calculateNextRunDate(startDate, formFrequency, startDate, formRepeatDays);
+        }
       }
 
       await updateRecurringPayment(currentUser.uid, editingPayment.id!, {
@@ -443,7 +487,7 @@ export const RecurringPayments = () => {
               <TrendingDown className="w-4 h-4 text-destructive" />
               <p className="text-xs text-muted-foreground">Monthly Expenses</p>
             </div>
-            <p className="text-lg sm:text-xl font-bold text-destructive">₹{Math.round(stats.monthlyExpenses).toLocaleString()}</p>
+            <p className={`text-lg sm:text-xl font-bold text-destructive ${blurClass}`}>₹{Math.round(stats.monthlyExpenses).toLocaleString()}</p>
             <p className="text-xs text-muted-foreground mt-0.5">
               {stats.hasDailyOrWeeklyExpenses
                 ? "Projected (daily/weekly converted)"
@@ -461,7 +505,7 @@ export const RecurringPayments = () => {
               <TrendingUp className="w-4 h-4 text-success" />
               <p className="text-xs text-muted-foreground">Monthly Income</p>
             </div>
-            <p className="text-lg sm:text-xl font-bold text-success">₹{Math.round(stats.monthlyIncome).toLocaleString()}</p>
+            <p className={`text-lg sm:text-xl font-bold text-success ${blurClass}`}>₹{Math.round(stats.monthlyIncome).toLocaleString()}</p>
             <p className="text-xs text-muted-foreground mt-0.5">
               {stats.hasDailyOrWeeklyIncome
                 ? "Projected (daily/weekly converted)"
@@ -479,7 +523,7 @@ export const RecurringPayments = () => {
               <DollarSign className="w-4 h-4 text-primary" />
               <p className="text-xs text-muted-foreground">Net Monthly</p>
             </div>
-            <p className={`text-lg sm:text-xl font-bold ${stats.totalMonthly >= 0 ? "text-success" : "text-destructive"}`}>
+            <p className={`text-lg sm:text-xl font-bold ${stats.totalMonthly >= 0 ? "text-success" : "text-destructive"} ${blurClass}`}>
               {stats.totalMonthly >= 0 ? "+" : ""}₹{Math.round(Math.abs(stats.totalMonthly)).toLocaleString()}
             </p>
             <p className="text-xs text-muted-foreground mt-0.5">Income - Expenses</p>
@@ -685,7 +729,7 @@ export const RecurringPayments = () => {
                       </div>
                     </div>
                     <div className="text-right flex-shrink-0">
-                      <p className={`font-bold text-sm sm:text-base ${payment.type === "income" ? "text-success" : "text-foreground"}`}>
+                      <p className={`font-bold text-sm sm:text-base ${payment.type === "income" ? "text-success" : "text-foreground"} ${blurClass}`}>
                         {payment.type === "income" ? "+" : ""}₹{payment.amount.toLocaleString()}
                       </p>
                       <p className={`text-xs ${isOverdue ? "text-destructive font-medium" : "text-muted-foreground"}`}>
@@ -722,19 +766,27 @@ export const RecurringPayments = () => {
                         <span className="hidden sm:inline">Delete</span>
                       </button>
                     </div>
-                    <button
-                      onClick={() => togglePayment(payment.id!)}
-                      className={`relative w-11 h-6 sm:w-12 sm:h-6 rounded-full transition-all flex-shrink-0 ${status === "active" ? "bg-primary" : "bg-muted/50"
-                        }`}
-                    >
-                      <motion.div
-                        className="absolute top-1 w-4 h-4 rounded-full bg-white shadow"
-                        animate={{
-                          left: status === "active" ? "calc(100% - 18px)" : "4px"
-                        }}
-                        transition={{ type: "spring", stiffness: 500, damping: 30 }}
-                      />
-                    </button>
+
+                    <div className="flex flex-col items-end gap-1">
+                      <button
+                        onClick={() => togglePayment(payment.id!)}
+                        className={`relative w-11 h-6 sm:w-12 sm:h-6 rounded-full transition-all flex-shrink-0 ${status === "active" ? "bg-primary" : "bg-muted/50"
+                          }`}
+                      >
+                        <motion.div
+                          className="absolute top-1 w-4 h-4 rounded-full bg-white shadow"
+                          animate={{
+                            left: status === "active" ? "calc(100% - 18px)" : "4px"
+                          }}
+                          transition={{ type: "spring", stiffness: 500, damping: 30 }}
+                        />
+                      </button>
+                      {status === "paused" && payment.remainingDays !== undefined && (
+                        <span className="text-[10px] text-yellow-500 font-medium">
+                          {payment.remainingDays}d preserved
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </motion.div>
               );
@@ -940,6 +992,24 @@ export const RecurringPayments = () => {
                       </div>
                     </div>
                   )}
+
+                  {/* Next Run Date */}
+                  <div className="pt-2">
+                    <label className="text-sm font-medium text-primary mb-2 block flex items-center gap-2">
+                      <Calendar className="w-4 h-4" />
+                      Next Payment Date
+                    </label>
+                    <input
+                      type="date"
+                      value={formNextRunDate}
+                      onChange={(e) => setFormNextRunDate(e.target.value)}
+                      className="w-full bg-primary/5 border border-primary/20 rounded-xl py-3 px-4 text-foreground focus:outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
+                    />
+                    <p className="text-[10px] text-muted-foreground mt-1.5 flex items-center gap-1 px-1">
+                      <AlertCircle className="w-3 h-3" />
+                      When the first payment should trigger.
+                    </p>
+                  </div>
                 </div>
               </div>
 
@@ -1157,6 +1227,24 @@ export const RecurringPayments = () => {
                       </div>
                     </div>
                   )}
+
+                  {/* Next Run Date */}
+                  <div className="pt-2">
+                    <label className="text-sm font-medium text-primary mb-2 block flex items-center gap-2">
+                      <Calendar className="w-4 h-4" />
+                      Next Payment Date
+                    </label>
+                    <input
+                      type="date"
+                      value={formNextRunDate}
+                      onChange={(e) => setFormNextRunDate(e.target.value)}
+                      className="w-full bg-primary/5 border border-primary/20 rounded-xl py-3 px-4 text-foreground focus:outline-none focus:border-primary/50 focus:ring-2 focus:ring-primary/20"
+                    />
+                    <p className="text-[10px] text-muted-foreground mt-1.5 flex items-center gap-1 px-1">
+                      <AlertCircle className="w-3 h-3" />
+                      Manually override when the next transaction will trigger.
+                    </p>
+                  </div>
                 </div>
               </div>
 

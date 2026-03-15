@@ -19,6 +19,7 @@ import {
 import { toast } from "sonner";
 import { format } from "date-fns";
 import { usePrivacy } from "@/contexts/PrivacyContext";
+import { SplitBillSettlement } from "./SplitBillSettlement";
 
 // Simplified Debt Calculation
 interface Debt {
@@ -111,6 +112,9 @@ export const SplitGroups = () => {
 
     // Scanner State
     const [showScanner, setShowScanner] = useState(false);
+
+    // Settlement State
+    const [settlementDebt, setSettlementDebt] = useState<{ from: string; to: string; amount: number; groupId: string } | null>(null);
 
     const blurClass = isPrivacyEnabled ? "blur-sm select-none" : "";
 
@@ -246,6 +250,23 @@ export const SplitGroups = () => {
         }
     };
 
+    const handleSettle = async (from: string, to: string, amount: number) => {
+        if (!currentUser || !activeGroup) return;
+        try {
+            // A settlement is an expense paid by 'from' and split ONLY with 'to'
+            await addGroupExpense(currentUser.uid, activeGroup.id!, {
+                description: `Settlement: ${from} to ${to}`,
+                amount: amount,
+                paidBy: from,
+                splitWith: [to],
+                date: new Date()
+            });
+            // Settlement successful, modal will close via SplitBillSettlement internal onSettle call success
+        } catch (error) {
+            throw error;
+        }
+    };
+
     const openEditGroup = () => {
         if (!activeGroup) return;
         setEditGroupName(activeGroup.name);
@@ -355,7 +376,7 @@ export const SplitGroups = () => {
                                     <Pencil className="w-4 h-4" />
                                 </button>
                             </h1>
-                            <p className="text-xs text-muted-foreground">{activeGroup.members.length} members • Total: ₹{currentViewTotal.toLocaleString()}</p>
+                            <p className="text-xs text-muted-foreground">{activeGroup.members.length} members • Total: <span className={blurClass}>₹{currentViewTotal.toLocaleString()}</span></p>
                         </div>
                     </div>
                 </header>
@@ -440,7 +461,15 @@ export const SplitGroups = () => {
                                             <span className="text-muted-foreground text-xs">owes</span>
                                             <span className="font-medium">{debt.to}</span>
                                         </div>
-                                        <span className={`font-bold text-primary ${blurClass}`}>₹{debt.amount.toLocaleString()}</span>
+                                        <div className="flex items-center gap-3">
+                                            <span className={`font-bold text-primary ${blurClass}`}>₹{debt.amount.toLocaleString()}</span>
+                                            <button 
+                                                onClick={() => setSettlementDebt({ ...debt, groupId: activeGroup.name })}
+                                                className="px-3 py-1.5 bg-primary/10 text-primary text-[10px] font-bold rounded-lg hover:bg-primary/20 transition-colors"
+                                            >
+                                                Settle Up
+                                            </button>
+                                        </div>
                                     </motion.div>
                                 ))
                             )}
@@ -730,6 +759,13 @@ export const SplitGroups = () => {
                 onClose={() => setShowScanner(false)}
                 onScanComplete={handleScanComplete}
                 mode="return_data"
+            />
+
+            <SplitBillSettlement
+                isOpen={!!settlementDebt}
+                onClose={() => setSettlementDebt(null)}
+                debt={settlementDebt || { from: "", to: "", amount: 0, groupId: "" }}
+                onSettle={handleSettle}
             />
         </div>
     );

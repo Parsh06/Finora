@@ -70,6 +70,7 @@ const MIME_TYPES: Record<string, string> = {
   webp: "image/webp",
   heic: "image/heic",
   heif: "image/heif",
+  pdf: "application/pdf",
 };
 
 const CATEGORY_KEYWORDS = {
@@ -496,3 +497,66 @@ export const scanBill = async (imageFile: File, userCategories?: string[]): Prom
     }
   }
 };
+
+/**
+ * Extract multiple transactions from a bank statement (PDF or Image)
+ */
+export const analyzeBankStatement = async (file: File, userCategories?: string[]): Promise<BillData[]> => {
+  if (!CONFIG.apiKey) {
+    throw new Error("Gemini API key not configured.");
+  }
+
+  try {
+    const base64Data = await imageToBase64(file);
+    const mimeType = getMimeType(file);
+
+    const prompt = `Extract ALL transactions from this bank statement. Look for a table or list of transactions.
+    Return ONLY a JSON array of objects with this structure:
+    [
+      {
+        "amount": <number, positive for expense, negative for income/credit>,
+        "date": "YYYY-MM-DD",
+        "merchant": "Description/Merchant Name",
+        "category": "Standard Category",
+        "type": "expense" | "income"
+      }
+    ]
+
+    Rules:
+    - Expenses: usually debits (Withdrawal/Transfer Out).
+    - Income: usually credits (Salary/Deposit/Transfer In).
+    - If unsure of category, suggest: Food, Shopping, Transport, Bills, Health, Education, or Other.
+    - Return a clean list. No markdown, no explanations.`;
+
+    let successfulResponse: GeminiResponse | undefined;
+
+    for (const model of FALLBACK_MODELS) {
+      try {
+        successfulResponse = await callGeminiApi(base64Data, mimeType, prompt, model);
+        if (successfulResponse) break;
+      } catch (e) {
+        console.warn(`Model ${model} failed for bank statement:`, e);
+      }
+    }
+
+    if (!successfulResponse) throw new Error("Failed to analyze bank statement.");
+
+    const responseText = successfulResponse.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!responseText) throw new Error("Empty response from AI.");
+
+    const transactions: any[] = extractJson(responseText);
+
+    return transactions.map(t => ({
+      amount: Math.abs(parseAmount(t.amount)),
+      date: parseDate(t.date),
+      merchant: t.merchant || "Unknown",
+      category: t.category || "other",
+      type: t.type || (parseAmount(t.amount) > 0 ? "expense" : "income"),
+      confidence: 85
+    }));
+
+  } catch (error: any) {
+    console.error("Bank statement analysis error:", error);
+    throw new Error(error.message || "Failed to process bank statement.");
+  }
+};

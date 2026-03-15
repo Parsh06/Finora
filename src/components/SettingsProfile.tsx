@@ -14,7 +14,8 @@ import {
   Check,
   X,
   Edit2,
-  Tag
+  Tag,
+  Coins
 } from "lucide-react";
 import { FinoraLogo } from "./FinoraLogo";
 import { useAuth } from "@/contexts/AuthContext";
@@ -184,6 +185,19 @@ export const SettingsProfile = ({ onLogout }: SettingsProfileProps) => {
         { icon: Download, label: "Export Data", description: isExporting ? "Exporting..." : "CSV, PDF", action: "link" as const },
         { icon: FileText, label: "Statements", action: "link" as const },
         { icon: Tag, label: "Manage Categories", action: "link" as const },
+      ]
+    },
+    {
+      title: "Preferences",
+      items: [
+        { 
+          icon: Coins, 
+          label: "Round-Up Savings", 
+          description: userProfile?.roundUpEnabled ? `Active (to nearest ₹${userProfile?.roundUpTarget || 10})` : "Disabled", 
+          action: "toggle" as const,
+          value: userProfile?.roundUpEnabled || false,
+          color: "text-amber-400"
+        },
       ]
     }
   ], [userProfile, currentUser, currency, isExporting]);
@@ -389,6 +403,22 @@ export const SettingsProfile = ({ onLogout }: SettingsProfileProps) => {
       handleExportData();
     } else if (item.label === "Statements") {
       handleExportData();
+    } else if (item.label === "Round-Up Savings") {
+      const isEnabled = !userProfile?.roundUpEnabled;
+      handleToggleRoundUp(isEnabled);
+    }
+  };
+
+  const handleToggleRoundUp = async (enabled: boolean) => {
+    try {
+      await updateUserProfile({ 
+        roundUpEnabled: enabled,
+        roundUpTarget: userProfile?.roundUpTarget || 10 // Default to 10 if not set
+      });
+      toast.success(`Round-Up savings ${enabled ? "enabled" : "disabled"}`);
+    } catch (error) {
+      console.error("Round-up toggle error:", error);
+      toast.error("Failed to update round-up settings");
     }
   };
 

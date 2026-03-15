@@ -11,7 +11,7 @@ import {
   Clock
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { addTransaction, subscribeToCategories, Category } from "@/lib/firestore";
+import { addTransaction, subscribeToCategories, Category, getTransactions, Transaction } from "@/lib/firestore";
 import { toast } from "sonner";
 import { format, parseISO } from "date-fns";
 
@@ -40,6 +40,7 @@ export const VoiceTransaction = ({ isOpen, onClose }: VoiceTransactionProps) => 
   const [isRecording, setIsRecording] = useState(false);
   const [permissionDenied, setPermissionDenied] = useState(false);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [recentTransactions, setRecentTransactions] = useState<Transaction[]>([]);
 
   const recognitionRef = useRef<SpeechRecognition | null>(null);
 
@@ -51,6 +52,20 @@ export const VoiceTransaction = ({ isOpen, onClose }: VoiceTransactionProps) => 
     });
     return () => unsubscribe();
   }, [currentUser]);
+
+  // Fetch recent transactions for context
+  useEffect(() => {
+    if (!currentUser || !isOpen) return;
+    const fetchHistory = async () => {
+      try {
+        const data = await getTransactions(currentUser.uid, 50);
+        setRecentTransactions(data);
+      } catch (err) {
+        console.error("Error fetching transactions for voice context:", err);
+      }
+    };
+    fetchHistory();
+  }, [currentUser, isOpen]);
 
   // Derive filtered categories based on selected type
   const filteredCategories = useMemo(() => {
@@ -172,6 +187,11 @@ export const VoiceTransaction = ({ isOpen, onClose }: VoiceTransactionProps) => 
     const dateStr = format(now, "yyyy-MM-dd");
     const timeStr = format(now, "HH:mm");
 
+    // Get unique merchants from history to help AI recognition
+    const knownMerchants = Array.from(new Set(recentTransactions.map(t => t.title)))
+      .slice(0, 30)
+      .join(", ");
+
     const prompt = `You are a finance assistant AI. Analyze the user's spoken sentence and extract structured transaction data.
 Current Date: ${dateStr}
 Current Time: ${timeStr}
@@ -182,6 +202,9 @@ Available Categories:
 - Expense: ${expenseCategories}
 - Income: ${incomeCategories}
 
+Recently Used Merchants:
+${knownMerchants || "None yet"}
+
 Instructions:
 1. Determine if it's "expense" or "income".
 2. Extract the amount.
@@ -190,6 +213,7 @@ Instructions:
    - CRITICAL: If no specific time is mentioned, use the "Current Time" provided above (${timeStr}).
    - If "current time" or "now" is implied, use ${timeStr}.
 5. Extract a brief description.
+6. Use the "Recently Used Merchants" list to resolve phonetic matches or ambiguous names (e.g., if user says "Zomato", and it's in the list, use "Zomato").
 
 Return JSON in this format:
 {

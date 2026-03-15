@@ -6,6 +6,7 @@ import { subscribeToTransactions, Transaction, deleteTransaction } from "@/lib/f
 import { format, isToday, isYesterday, differenceInDays, startOfMonth, endOfMonth, startOfWeek, endOfWeek, startOfYear, endOfYear, startOfDay, endOfDay } from "date-fns";
 import { toast } from "sonner";
 import { DateFilter, DateFilterState } from "./DateFilter";
+import { usePrivacy } from "@/contexts/PrivacyContext";
 
 const categoryIcons: Record<string, string> = {
   // Expense categories
@@ -32,6 +33,7 @@ type PeriodType = "all" | "today" | "week" | "month";
 
 export const Transactions = ({ onBack }: { onBack?: () => void }) => {
   const { currentUser } = useAuth();
+  const { isPrivacyEnabled } = usePrivacy();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<FilterType>("all");
@@ -49,6 +51,8 @@ export const Transactions = ({ onBack }: { onBack?: () => void }) => {
 
     return () => unsubscribe();
   }, [currentUser]);
+
+  const blurClass = isPrivacyEnabled ? "blur-md select-none transition-all duration-300" : "transition-all duration-300";
 
   const now = new Date();
   const formatDate = (date: Date | any): string => {
@@ -323,7 +327,7 @@ export const Transactions = ({ onBack }: { onBack?: () => void }) => {
                     <h3 className="text-sm font-semibold text-foreground">{dateLabel}</h3>
                     <p className={`text-xs font-medium ${
                       dayTotal >= 0 ? "text-success" : "text-destructive"
-                    }`}>
+                    } ${blurClass}`}>
                       {dayTotal >= 0 ? "+" : ""}₹{Math.abs(dayTotal).toLocaleString()}
                     </p>
                   </div>
@@ -378,7 +382,7 @@ export const Transactions = ({ onBack }: { onBack?: () => void }) => {
                           <div className="flex items-center gap-2 ml-2">
                             <p className={`font-semibold text-sm sm:text-base text-right ${
                               transaction.type === "income" ? "text-success" : "text-foreground"
-                            }`}>
+                            } ${blurClass}`}>
                               {transaction.type === "income" ? "+" : "-"}₹{transaction.amount.toLocaleString()}
                             </p>
                             {transaction.id && (
