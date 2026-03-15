@@ -1,10 +1,12 @@
 import { startOfDay, addDays, format, parseISO } from "date-fns";
 import { Transaction, RecurringPayment, SavingsGoal } from "./firestore";
+import { aiCache } from "./cache-service";
 
 const CONFIG = {
-  apiKey: import.meta.env.VITE_GEMINI_API_KEY || import.meta.env.VITE_GOOGLE_GENAI_API_KEY,
-  model: "gemini-2.0-flash",
-  baseUrl: "https://generativelanguage.googleapis.com/v1beta/models",
+  // Use Groq for text chat to avoid Gemini quota issues
+  apiKey: import.meta.env.VITE_GROQ_API_KEY,
+  model: "llama-3.3-70b-versatile",
+  baseUrl: "https://api.groq.com/openai/v1/chat/completions",
 } as const;
 
 export interface ChatMessage {
@@ -83,39 +85,60 @@ export const getAIChatResponse = async (
   context: FinancialContext
 ): Promise<string> => {
   if (!CONFIG.apiKey) {
-    return "Gemini API key is not configured. Please check your .env file.";
+    return "Groq API key is not configured. Please check your .env file.";
   }
 
   const lastMessage = messages[messages.length - 1].content;
+  
+  // 1. Try Cache First
+  const cacheKey = aiCache.generateKey("chat", { context, lastMessage });
+  const cachedResponse = aiCache.get<string>(cacheKey);
+  
+  if (cachedResponse) {
+    console.log("🚀 Serving chat response from cache");
+    return cachedResponse;
+  }
+
   const prompt = generatePrompt(context, lastMessage);
 
   try {
-    const response = await fetch(`${CONFIG.baseUrl}/${CONFIG.model}:generateContent?key=${CONFIG.apiKey}`, {
+    const response = await fetch(CONFIG.baseUrl, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { 
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${CONFIG.apiKey}`
+      },
       body: JSON.stringify({
-        contents: [
+        model: CONFIG.model,
+        messages: [
+          {
+            role: "system",
+            content: "You are Finora AI, a world-class financial advisor. You provide helpful, accurate, and concise financial advice based on the user's data."
+          },
           {
             role: "user",
-            parts: [{ text: prompt }]
+            content: prompt
           }
         ],
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 256,
-        },
+        temperature: 0.7,
+        max_tokens: 512,
       }),
     });
 
     if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.error?.message || "Failed to fetch AI response");
+        throw new Error(error.error?.message || "Failed to fetch Groq response");
     }
 
     const data = await response.json();
-    return data.candidates?.[0]?.content?.parts?.[0]?.text || "I'm sorry, I couldn't process that request.";
+    const aiText = data.choices?.[0]?.message?.content || "I'm sorry, I couldn't process that request.";
+
+    // 2. Cache the response (TTL: 15 minutes is usually enough for chat context)
+    aiCache.set(cacheKey, aiText, 15);
+
+    return aiText;
   } catch (error) {
-    console.error("AI Chat Error:", error);
+    console.error("Groq AI Error:", error);
     return "Sorry, I'm having trouble connecting to my brain right now. Please try again later.";
   }
 };

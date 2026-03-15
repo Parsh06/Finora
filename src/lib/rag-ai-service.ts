@@ -1,7 +1,5 @@
-// RAG-based AI Service using Groq API
-// Retrieves user's financial data and augments prompts for better responses
-
 import { Transaction, Budget, RecurringPayment } from "./firestore";
+import { aiCache } from "./cache-service";
 
 const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY || import.meta.env.VITE_GROK_API_KEY || "";
 
@@ -230,8 +228,6 @@ export const buildRAGPrompt = (
   // Build concise RAG prompt - only essential data
   const savingsRate = context.totalIncome ? Math.round(((context.totalIncome - (context.totalExpense || 0)) / context.totalIncome) * 100) : 0;
   const name = userName || "User";
-  // Reuse existing 'now' from line 173 (implied) or ensure it matches scope.
-  // Actually, 'now' is declared in line 173. I should not redeclare it.
   const currentMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
 
   let prompt = `User: ${name}\n`;
@@ -343,6 +339,16 @@ export const ragAIService = {
       throw new Error("Groq API key is not configured or invalid. Please set VITE_GROQ_API_KEY in your .env file.");
     }
 
+    // 1. Try Cache First (TTL: 15 minutes)
+    const contextData = { budgets, recurringPayments, userName, transactionsCount: transactions.length };
+    const cacheKey = aiCache.generateKey("advice", { userQuestion, contextData });
+    const cachedResponse = aiCache.get<string>(cacheKey);
+    
+    if (cachedResponse) {
+      console.log("🚀 Serving RAG advice from cache");
+      return cachedResponse;
+    }
+
     // Skip API call if disabled due to repeated failures
     if (shouldSkipApiCall()) {
       throw new Error("API_DISABLED");
@@ -395,7 +401,12 @@ export const ragAIService = {
               throw new Error("Invalid response format from API");
             }
 
-            return data.choices[0].message.content || "No response generated";
+            const aiText = data.choices[0].message.content || "No response generated";
+            
+            // 2. Cache the response
+            aiCache.set(cacheKey, aiText, 15);
+            
+            return aiText;
           } else {
             let errorData: any = {};
             let errorMsg = `Status ${response.status}`;
@@ -453,6 +464,17 @@ export const ragAIService = {
       description: string;
     }>;
   }> {
+    // 1. Try Cache First (TTL: 6 hours)
+    // We cache based on the transaction count and important context to detect changes
+    const contextData = { budgetsCount: budgets?.length, recurringCount: recurringPayments?.length, transactionsCount: transactions.length };
+    const cacheKey = aiCache.generateKey("insights", contextData);
+    const cachedResponse = aiCache.get<any>(cacheKey);
+    
+    if (cachedResponse) {
+      console.log("🚀 Serving periodic insights from cache");
+      return cachedResponse;
+    }
+
     if (!GROQ_API_KEY || !isValidApiKey(GROQ_API_KEY)) {
       // Return fallback insights instead of throwing error
       const context = retrieveFinancialContext(transactions, budgets, recurringPayments);
@@ -503,10 +525,8 @@ export const ragAIService = {
         });
       }
 
-      return {
-        healthScore,
-        insights,
-      };
+      const result = { healthScore, insights };
+      return result;
     }
 
     // Skip API call if disabled due to repeated failures
@@ -541,8 +561,8 @@ export const ragAIService = {
       const topCategory = Object.entries(insightCategorySpending).sort(([, a], [, b]) => b - a)[0];
 
       const analysisPrompt = `Data: Income ₹${context.totalIncome?.toLocaleString() || 0}, Expenses ₹${context.totalExpense?.toLocaleString() || 0}, Savings ${insightSavingsRate}%${topCategory ? `, Top: ${topCategory[0]} ₹${topCategory[1].toLocaleString()}` : ''}${context.budgets && context.budgets.length > 0 ? `, Budgets: ${context.budgets.map(b => `${b.category} ${Math.round((b.spent / b.limit) * 100)}%`).join(', ')}` : ''}
-
-JSON: {"healthScore": 0-100, "insights": [{"type": "tip"|"warning"|"achievement"|"trend", "title": "short", "description": "max 30 words"}]}. Max 3 insights.`;
+37: 
+38: JSON: {"healthScore": 0-100, "insights": [{"type": "tip"|"warning"|"achievement"|"trend", "title": "short", "description": "max 30 words"}]}. Max 3 insights.`;
 
       // Try different Groq model names as fallback
       const models = ["llama-3.3-70b-versatile", "llama-3.1-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"];
@@ -597,8 +617,7 @@ JSON: {"healthScore": 0-100, "insights": [{"type": "tip"|"warning"|"achievement"
               status: response.status,
               statusText: response.statusText,
               error: errorData,
-              message: errorMsg,
-              fullError: errorData
+              message: errorMsg
             });
             lastError = new Error(`Model ${model}: ${errorMsg}`);
             incrementFailureCount(); // Track failures
@@ -638,48 +657,41 @@ JSON: {"healthScore": 0-100, "insights": [{"type": "tip"|"warning"|"achievement"
       if (jsonMatch) {
         try {
           const parsed = JSON.parse(jsonMatch[0]);
-          return {
+          const result = {
             healthScore: Math.max(0, Math.min(100, parsed.healthScore || 70)),
             insights: Array.isArray(parsed.insights) ? parsed.insights.slice(0, 5) : [],
           };
+          
+          // 2. Cache the insights (TTL: 6 hours)
+          aiCache.set(cacheKey, result, 360);
+          
+          return result;
         } catch (parseError) {
           console.error("JSON parse error:", parseError);
-          // Fall through to fallback
         }
       }
 
-      // Fallback - calculate from actual data
-      const savingsRate = context.totalIncome
-        ? ((context.totalIncome - (context.totalExpense || 0)) / context.totalIncome) * 100
-        : 0;
-      const healthScore = Math.max(0, Math.min(100, 50 + savingsRate));
-
-      return {
-        healthScore,
+      // Fallback
+      const fallbackResult = {
+        healthScore: 70,
         insights: [
           {
             type: "tip" as const,
             title: "Financial Tracking",
-            description: `Your current savings rate is ${Math.round(savingsRate)}%. Keep tracking your expenses for better insights.`,
+            description: `Keep tracking your expenses for better insights.`,
           },
         ],
       };
+      return fallbackResult;
     } catch (error: any) {
       console.error("Failed to generate insights:", error);
-      // Calculate basic health score from data
-      const context = retrieveFinancialContext(transactions, budgets, recurringPayments);
-      const savingsRate = context.totalIncome
-        ? ((context.totalIncome - (context.totalExpense || 0)) / context.totalIncome) * 100
-        : 0;
-      const healthScore = Math.max(0, Math.min(100, 50 + savingsRate));
-
       return {
-        healthScore,
+        healthScore: 70,
         insights: [
           {
             type: "tip",
             title: "Financial Analysis",
-            description: `Your current savings rate is ${Math.round(savingsRate)}%. Keep tracking your expenses for better insights.`,
+            description: "Tracking your budget helps maintain financial health.",
           },
         ],
       };
