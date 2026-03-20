@@ -748,7 +748,7 @@ Important:
                           <select
                             value={budget.category}
                             onChange={(e) => handleBudgetEdit(index, "category", e.target.value)}
-                            className="flex-1 bg-background border border-primary/50 rounded-lg px-3 py-2 font-medium focus:outline-none focus:ring-2 focus:ring-primary/50"
+                            className="nice-select !h-10 !py-1 !px-3"
                           >
                             {Object.entries(categoryLabels).map(([key, label]) => (
                               <option key={key} value={key}>

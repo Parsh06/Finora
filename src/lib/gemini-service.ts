@@ -32,6 +32,13 @@ const GEMINI_BASE_URL = `https://generativelanguage.googleapis.com/v1beta/models
 // TYPES
 // ============================================================================
 
+export interface LineItem {
+  name: string;
+  amount: number;
+  quantity?: number;
+  category?: string;
+}
+
 export interface BillData {
   amount: number;
   date: string;
@@ -39,7 +46,9 @@ export interface BillData {
   category: string;
   confidence: number;
   paymentMethod?: string;
-  items?: string[];
+  items?: LineItem[];
+  taxAmount?: number;
+  receiptId?: string;
 }
 
 interface GeminiResponse {
@@ -52,9 +61,11 @@ interface GeminiResponse {
 
 interface RawBillData {
   amount?: number | string;
+  totalAmount?: number | string;
   date?: string;
   merchant?: string;
-  items?: string[];
+  items?: Array<{ name: string; amount: number | string; quantity?: number }>;
+  taxAmount?: number | string;
   paymentMethod?: string;
   category?: string;
 }
@@ -130,10 +141,27 @@ const getMimeType = (file: File): string => {
 const getTodayDate = (): string => new Date().toISOString().split("T")[0];
 
 /**
+ * Categorize a single item based on its name
+ */
+export const categorizeItem = (itemName: string): string => {
+  const text = itemName.toLowerCase();
+  
+  if (["milk", "bread", "egg", "salt", "sugar", "oil", "rice", "flour", "grocery", "vegetable", "fruit", "meat", "chicken", "fish", "amul", "tata", "maggi", "tea", "coffee"].some(k => text.includes(k))) return "food";
+  if (["soap", "dishwash", "detergent", "hic", "harpic", "vim", "surf", "shampoo", "toothpaste", "tissue", "household", "cleaner"].some(k => text.includes(k))) return "household";
+  if (["lays", "kurkure", "snack", "biscuit", "cookie", "chips", "coke", "pepsi", "drink", "chocolate", "candy"].some(k => text.includes(k))) return "food";
+  if (["amazon", "flipkart", "shopping", "clothes", "shirt", "pant", "shoe"].some(k => text.includes(k))) return "shopping";
+  if (["uber", "ola", "petrol", "fuel", "gas", "taxi"].some(k => text.includes(k))) return "transport";
+  if (["medicine", "tablet", "syrup", "capsule", "pharmacy", "medical"].some(k => text.includes(k))) return "health";
+  
+  return "other";
+};
+
+/**
  * Categorize expense based on merchant and items
  */
-const categorizeExpense = (merchant: string, items: string[] = []): string => {
-  const searchText = `${merchant} ${items.join(" ")}`.toLowerCase();
+const categorizeExpense = (merchant: string, items: LineItem[] = []): string => {
+  const itemNames = items.map(i => i.name).join(" ");
+  const searchText = `${merchant} ${itemNames}`.toLowerCase();
 
   for (const [category, keywords] of Object.entries(CATEGORY_KEYWORDS)) {
     if (keywords.some(keyword => searchText.includes(keyword))) {
@@ -244,24 +272,26 @@ const generatePrompt = (userCategories?: string[]): string => {
     ? `Classify into one of these EXACT categories: ${userCategories.join(", ")}. Use "Other" if no match.`
     : `Classify into a standard category (Food, Transport, Shopping, Bills, etc.)`;
 
-  return `Extract bill information from this image. Return ONLY valid JSON with this structure:
-
+  return `Extract ALL line items from this receipt as a JSON array. Return ONLY valid JSON.
+  
 {
-  "amount": <total amount as number>,
-  "date": <date in YYYY-MM-DD format>,
-  "merchant": <store/vendor name>,
-  "items": [<max 5 main items>],
-  "paymentMethod": <"cash"|"card"|"upi"|"online"|"other"|null>,
-  "category": <classified category>
+  "merchant": "Store Name",
+  "date": "YYYY-MM-DD",
+  "totalAmount": <total as number>,
+  "taxAmount": <tax as number or 0>,
+  "items": [
+    { "name": "Item Description", "amount": <item price as number>, "quantity": <number or null> }
+  ],
+  "paymentMethod": "cash"|"card"|"upi"|"online"|null,
+  "category": "Main Bill Category"
 }
 
 Rules:
-- Extract TOTAL/FINAL amount (no currency symbols, commas, or spaces)
-- Use date FROM THE BILL. Only use ${todayDate} if no date visible
+- Capture every physical line item found.
+- totalAmount should be the final amount paid.
+- Use date FROM THE BILL. Only use ${todayDate} if no date visible.
 - ${categoryInstruction}
-- If unclear, use: amount=0, date="${todayDate}", merchant="Unknown Merchant", items=[], paymentMethod=null
-
-Return JSON only, no markdown or explanations.`;
+- If items are not extractable, items should be [].`;
 };
 
 // ============================================================================
@@ -374,12 +404,21 @@ const processBillData = (rawData: RawBillData, userCategories?: string[]): BillD
   const todayDate = getTodayDate();
 
   // Parse basic fields
-  const amount = parseAmount(rawData.amount);
+  const amount = parseAmount(rawData.totalAmount || rawData.amount);
   const merchant = (rawData.merchant || "").trim() || "Unknown Merchant";
   const date = parseDate(rawData.date);
-  const items = Array.isArray(rawData.items)
-    ? rawData.items.slice(0, 5).filter(item => item && String(item).trim())
+
+  // Parse items and categorize them
+  const items: LineItem[] = Array.isArray(rawData.items)
+    ? rawData.items.map(item => ({
+        name: String(item.name || "Unknown Item").trim(),
+        amount: parseAmount(item.amount),
+        quantity: item.quantity ? Number(item.quantity) : undefined,
+        category: categorizeItem(item.name || "")
+      }))
     : [];
+
+  const taxAmount = parseAmount(rawData.taxAmount);
   const paymentMethod = normalizePaymentMethod(rawData.paymentMethod);
 
   // Determine category
@@ -401,7 +440,13 @@ const processBillData = (rawData: RawBillData, userCategories?: string[]): BillD
   }
 
   // Calculate confidence
-  const confidence = calculateConfidence({ amount, merchant, date, items, paymentMethod });
+  const confidence = calculateConfidence({ 
+    amount, 
+    merchant, 
+    date, 
+    items: items.map(i => i.name), 
+    paymentMethod 
+  });
 
   return {
     amount,
@@ -411,6 +456,7 @@ const processBillData = (rawData: RawBillData, userCategories?: string[]): BillD
     confidence,
     paymentMethod,
     items,
+    taxAmount,
   };
 };
 

@@ -13,6 +13,7 @@ import {
   limit,
   Timestamp,
   onSnapshot,
+  writeBatch,
 } from "firebase/firestore";
 import { db } from "./firebase";
 
@@ -29,7 +30,9 @@ export interface Transaction {
   paymentMethod?: string;
   note?: string;
   isRecurring?: boolean; // Flag to indicate if this was auto-generated
+  isLearned?: boolean; // Flag to indicate if this was predicted by the learning engine
   recurringPaymentId?: string; // Link back to recurring payment record
+  receiptId?: string; // Link to a scanned receipt for line-item grouping
   createdAt?: Timestamp;
   updatedAt?: Timestamp;
 }
@@ -77,6 +80,68 @@ export interface RecurringPayment {
   isActive?: boolean;
   pausedAt?: string; // ISO date string when it was paused
   remainingDays?: number; // Days remaining until next trigger at time of pause
+  currentValue?: number; // For SIPs: Units * NAV
+  lastValueUpdated?: Timestamp;
+  benchmarkReturn?: number; // For comparison (e.g. Nifty 50)
+  taxBenefit80C?: boolean;
+  taxBenefitNPS?: boolean;
+}
+
+export interface Asset {
+  id?: string;
+  userId: string;
+  name: string;
+  category: "liquid" | "investment" | "physical" | "other";
+  currentValue: number;
+  lastUpdated: Timestamp;
+  linkedSipId?: string;
+  taxBenefit80C?: boolean;
+}
+
+export interface Liability {
+  id?: string;
+  userId: string;
+  name: string;
+  category: "homeloan" | "carloan" | "creditcard" | "other" | "loan";
+  outstandingAmount: number;
+  monthlyEmi?: number;
+  interestRate?: number;
+  minimumPayment?: number;
+  lastUpdated: Timestamp | Date;
+}
+
+export interface NetWorthSnapshot {
+  id?: string;
+  userId: string;
+  month: string; // YYYY-MM
+  totalAssets: number;
+  totalLiabilities: number;
+  netWorth: number;
+  assetsBreakdown: Record<string, number>;
+  liabilitiesBreakdown: Record<string, number>;
+  timestamp: Timestamp;
+}
+
+export interface MonthlyNarrative {
+  id?: string;
+  userId: string;
+  month: string; // YYYY-MM
+  content: string;
+  context: any; // The financial context object used for generation
+  generatedAt: Timestamp;
+  expiresAt: Timestamp; // 24 hours after generation
+}
+
+export interface ExpenseDNA {
+  archetype: string;
+  title: string;
+  emoji: string;
+  traits: string[];
+  insight: string;
+  peakSpendDay: string;
+  topCategory: string;
+  generatedAt: Timestamp;
+  month: string; // YYYY-MM
 }
 
 export interface UserProfile {
@@ -86,6 +151,14 @@ export interface UserProfile {
   email: string;
   phone?: string;
   currency: string;
+  currentBalance?: number;
+  cashFlowSafetyFloor?: number;
+  salaryDate?: number;
+  salaryAmount?: number;
+  budgetingMode?: "limit" | "zerobased";
+  savingsFirstPercent?: number;
+  merchantWatchlist?: string[]; // Array of normalized merchant names
+  dnaProfile?: ExpenseDNA;
   createdAt?: Timestamp;
   updatedAt?: Timestamp;
 }
@@ -101,6 +174,17 @@ export interface Category {
   isActive: boolean;
   createdAt?: Timestamp;
   updatedAt?: Timestamp;
+}
+
+export interface MerchantMapping {
+  id?: string;
+  userId: string;
+  merchant: string; // Normalized name
+  preferredCategory: string;
+  correctionCount: number;
+  confidence: number;
+  aiOriginalCategory?: string;
+  lastCorrected: Timestamp | Date;
 }
 
 // Transactions
@@ -217,6 +301,9 @@ export const addTransaction = async (
   if (transaction.note !== undefined && transaction.note !== null && transaction.note !== "") {
     cleanedTransaction.note = transaction.note.trim();
   }
+  if (transaction.receiptId !== undefined && transaction.receiptId !== null && transaction.receiptId !== "") {
+    cleanedTransaction.receiptId = transaction.receiptId.trim();
+  }
 
   try {
     const collectionPath = `users/${userId}/transactions`;
@@ -294,6 +381,9 @@ export const updateTransaction = async (
   if (updates.note !== undefined && updates.note !== null && updates.note !== "") {
     updateData.note = updates.note;
   }
+  if (updates.receiptId !== undefined && updates.receiptId !== null && updates.receiptId !== "") {
+    updateData.receiptId = updates.receiptId;
+  }
 
   // Convert date if it's a Date object
   if (updates.date !== undefined) {
@@ -307,14 +397,19 @@ export const deleteTransaction = async (
   userId: string,
   transactionId: string
 ): Promise<void> => {
-  const transactionRef = doc(
-    db,
-    "users",
-    userId,
-    "transactions",
-    transactionId
-  );
+  const transactionRef = doc(db, "users", userId, "transactions", transactionId);
   await deleteDoc(transactionRef);
+};
+
+export const updateUserSettings = async (
+  userId: string,
+  settings: Partial<UserProfile>
+): Promise<void> => {
+  const userRef = doc(db, "users", userId);
+  await updateDoc(userRef, {
+    ...settings,
+    updatedAt: Timestamp.now(),
+  });
 };
 
 // Budgets
@@ -567,6 +662,26 @@ export const updateRecurringPayment = async (
   await updateDoc(paymentRef, updateData);
 };
 
+export const updateSipPortfolioValue = async (
+  userId: string,
+  paymentId: string,
+  currentValue: number
+): Promise<void> => {
+  const paymentRef = doc(
+    db,
+    "users",
+    userId,
+    "recurringPayments",
+    paymentId
+  );
+
+  await updateDoc(paymentRef, {
+    currentValue,
+    lastValueUpdated: Timestamp.now(),
+    updatedAt: Timestamp.now()
+  });
+};
+
 export const deleteRecurringPayment = async (
   userId: string,
   paymentId: string
@@ -627,6 +742,13 @@ export const updateUserProfile = async (
   }
   if (updates.currency !== undefined) updateData.currency = updates.currency;
   if (updates.userId !== undefined) updateData.userId = updates.userId;
+  if (updates.currentBalance !== undefined) updateData.currentBalance = updates.currentBalance;
+  if (updates.cashFlowSafetyFloor !== undefined) updateData.cashFlowSafetyFloor = updates.cashFlowSafetyFloor;
+  if (updates.salaryDate !== undefined) updateData.salaryDate = updates.salaryDate;
+  if (updates.salaryAmount !== undefined) updateData.salaryAmount = updates.salaryAmount;
+  if (updates.budgetingMode !== undefined) updateData.budgetingMode = updates.budgetingMode;
+  if (updates.savingsFirstPercent !== undefined) updateData.savingsFirstPercent = updates.savingsFirstPercent;
+  if (updates.merchantWatchlist !== undefined) updateData.merchantWatchlist = updates.merchantWatchlist;
   await updateDoc(userRef, updateData);
 };
 
@@ -899,6 +1021,74 @@ export interface GroupExpense {
   createdAt?: Timestamp;
 }
 
+// Merchant Mappings (Learning Engine)
+export const merchantMappingsCollection = (userId: string) =>
+  collection(db, "users", userId, "merchantMappings");
+
+export const getMerchantMapping = async (
+  userId: string,
+  normalizedMerchant: string
+): Promise<MerchantMapping | null> => {
+  const q = query(
+    merchantMappingsCollection(userId),
+    where("merchant", "==", normalizedMerchant),
+    limit(1)
+  );
+  const querySnapshot = await getDocs(q);
+  if (querySnapshot.empty) return null;
+  const doc = querySnapshot.docs[0];
+  return { id: doc.id, ...doc.data() } as MerchantMapping;
+};
+
+export const updateMerchantMapping = async (
+  userId: string,
+  mapping: Omit<MerchantMapping, "userId">
+): Promise<void> => {
+  const normalizedMerchant = mapping.merchant.toLowerCase().trim();
+  const existing = await getMerchantMapping(userId, normalizedMerchant);
+
+  const mappingData = {
+    ...mapping,
+    merchant: normalizedMerchant,
+    userId,
+    lastCorrected: Timestamp.now(),
+  };
+
+  if (existing?.id) {
+    const docRef = doc(db, "users", userId, "merchantMappings", existing.id);
+    await updateDoc(docRef, mappingData);
+  } else {
+    await addDoc(merchantMappingsCollection(userId), mappingData);
+  }
+};
+
+export const batchUpdateTransactionsCategory = async (
+  userId: string,
+  merchantName: string,
+  newCategory: string
+): Promise<number> => {
+  // This expects the merchant name to be matched against transaction titles
+  // In a real app, we'd use a more robust fuzzy match or the same normalization
+  const q = query(
+    transactionsCollection(userId),
+    where("title", "==", merchantName) // Simple equality for now
+  );
+  
+  const querySnapshot = await getDocs(q);
+  if (querySnapshot.empty) return 0;
+
+  const batch = writeBatch(db);
+  querySnapshot.docs.forEach((d) => {
+    batch.update(d.ref, { 
+      category: newCategory,
+      updatedAt: Timestamp.now()
+    });
+  });
+
+  await batch.commit();
+  return querySnapshot.size;
+};
+
 export const expenseGroupsCollection = (userId: string) =>
   collection(db, "users", userId, "expenseGroups");
 
@@ -1048,3 +1238,133 @@ export const deleteGroupExpense = async (
   }
 };
 
+// Monthly Narratives
+export const monthlyNarrativesCollection = (userId: string) =>
+  collection(db, "users", userId, "monthlyNarratives");
+
+export const getMonthlyNarrative = async (
+  userId: string,
+  month: string
+): Promise<MonthlyNarrative | null> => {
+  const q = query(
+    monthlyNarrativesCollection(userId),
+    where("month", "==", month),
+    limit(1)
+  );
+  const querySnapshot = await getDocs(q);
+  if (querySnapshot.empty) return null;
+  const doc = querySnapshot.docs[0];
+  return { id: doc.id, ...doc.data() } as MonthlyNarrative;
+};
+
+export const saveMonthlyNarrative = async (
+  userId: string,
+  narrative: Omit<MonthlyNarrative, "id" | "userId" | "generatedAt">
+): Promise<string> => {
+  const data = {
+    ...narrative,
+    userId,
+    generatedAt: Timestamp.now(),
+  };
+  
+  // Try to update existing one for the same month if it exists
+  const existing = await getMonthlyNarrative(userId, narrative.month);
+  if (existing && existing.id) {
+    const ref = doc(monthlyNarrativesCollection(userId), existing.id);
+    await setDoc(ref, data, { merge: true });
+    return existing.id;
+  }
+
+  const docRef = await addDoc(monthlyNarrativesCollection(userId), data);
+  return docRef.id;
+};
+
+// Helper to fetch transactions by date range (one-time fetch)
+export const getTransactionsInDateRange = async (
+  userId: string,
+  startDate: Date,
+  endDate: Date
+): Promise<Transaction[]> => {
+  const q = query(
+    transactionsCollection(userId),
+    where("date", ">=", Timestamp.fromDate(startDate)),
+    where("date", "<=", Timestamp.fromDate(endDate)),
+    orderBy("date", "desc")
+  );
+  
+  const querySnapshot = await getDocs(q);
+  return querySnapshot.docs.map((doc) => {
+    const data = doc.data();
+    return {
+      id: doc.id,
+      ...data,
+      date: data.date?.toDate ? data.date.toDate() : (data.date instanceof Date ? data.date : new Date()),
+    } as Transaction;
+  });
+};
+// Net Worth - Assets
+export const assetsCollection = (userId: string) =>
+  collection(db, "users", userId, "assets");
+
+export const getAssets = async (userId: string): Promise<Asset[]> => {
+  const q = query(assetsCollection(userId), orderBy("lastUpdated", "desc"));
+  const querySnapshot = await getDocs(q);
+  return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Asset));
+};
+
+export const addAsset = async (userId: string, asset: Omit<Asset, "id" | "userId" | "lastUpdated">): Promise<string> => {
+  const data = { ...asset, userId, lastUpdated: Timestamp.now() };
+  const docRef = await addDoc(assetsCollection(userId), data);
+  return docRef.id;
+};
+
+export const updateAsset = async (userId: string, assetId: string, updates: Partial<Asset>): Promise<void> => {
+  const docRef = doc(db, "users", userId, "assets", assetId);
+  await updateDoc(docRef, { ...updates, lastUpdated: Timestamp.now() });
+};
+
+export const deleteAsset = async (userId: string, assetId: string): Promise<void> => {
+  const docRef = doc(db, "users", userId, "assets", assetId);
+  await deleteDoc(docRef);
+};
+
+// Net Worth - Liabilities
+export const liabilitiesCollection = (userId: string) =>
+  collection(db, "users", userId, "liabilities");
+
+export const getLiabilities = async (userId: string): Promise<Liability[]> => {
+  const q = query(liabilitiesCollection(userId), orderBy("lastUpdated", "desc"));
+  const querySnapshot = await getDocs(q);
+  return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Liability));
+};
+
+export const addLiability = async (userId: string, liability: Omit<Liability, "id" | "userId" | "lastUpdated">): Promise<string> => {
+  const data = { ...liability, userId, lastUpdated: Timestamp.now() };
+  const docRef = await addDoc(liabilitiesCollection(userId), data);
+  return docRef.id;
+};
+
+export const updateLiability = async (userId: string, liabilityId: string, updates: Partial<Liability>): Promise<void> => {
+  const docRef = doc(db, "users", userId, "liabilities", liabilityId);
+  await updateDoc(docRef, { ...updates, lastUpdated: Timestamp.now() });
+};
+
+export const deleteLiability = async (userId: string, liabilityId: string): Promise<void> => {
+  const docRef = doc(db, "users", userId, "liabilities", liabilityId);
+  await deleteDoc(docRef);
+};
+
+// Net Worth - History Snapshots
+export const netWorthHistoryCollection = (userId: string) =>
+  collection(db, "users", userId, "netWorthHistory");
+
+export const getNetWorthHistory = async (userId: string, limitCount: number = 12): Promise<NetWorthSnapshot[]> => {
+  const q = query(netWorthHistoryCollection(userId), orderBy("month", "desc"), limit(limitCount));
+  const querySnapshot = await getDocs(q);
+  return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as NetWorthSnapshot)).reverse();
+};
+
+export const saveNetWorthSnapshot = async (userId: string, snapshot: Omit<NetWorthSnapshot, "id" | "userId" | "timestamp">): Promise<void> => {
+  const docRef = doc(netWorthHistoryCollection(userId), snapshot.month);
+  await setDoc(docRef, { ...snapshot, userId, timestamp: Timestamp.now() }, { merge: true });
+};

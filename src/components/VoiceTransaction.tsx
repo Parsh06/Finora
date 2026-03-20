@@ -14,6 +14,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { addTransaction, subscribeToCategories, Category, getTransactions, Transaction } from "@/lib/firestore";
 import { toast } from "sonner";
 import { format, parseISO } from "date-fns";
+import { predictCategory } from "@/lib/merchant-service";
 
 interface VoiceTransactionProps {
   isOpen: boolean;
@@ -281,6 +282,17 @@ Return JSON in this format:
       finalCategory = otherCat ? otherCat.name : (match?.name || "Other");
     }
 
+    // --- SMART CATEGORY CORRECTION INTEGRATION ---
+    if (currentUser && parsed.description) {
+      const prediction = await predictCategory(currentUser.uid, parsed.description, finalCategory);
+      if (prediction.isLearned) {
+        finalCategory = prediction.category;
+        (parsed as any).isLearned = true;
+        console.log(`[Voice] Overrode AI category with learned mapping: ${prediction.category}`);
+      }
+    }
+    // ----------------------------------------------
+
     return {
       type: parsed.type || "expense",
       amount: Number(parsed.amount),
@@ -289,7 +301,8 @@ Return JSON in this format:
       paymentMethod: parsed.paymentMethod || undefined,
       date: parsed.date || now.toISOString().split("T")[0],
       time: parsed.time || format(now, "HH:mm"),
-    };
+      isLearned: (parsed as any).isLearned || false,
+    } as any;
   };
 
   const startListening = () => {
@@ -355,6 +368,7 @@ Return JSON in this format:
         type: extractedData.type,
         date: transactionDate,
         note: "Added via voice",
+        isLearned: (extractedData as any).isLearned || false,
       };
 
       if (extractedData.paymentMethod) {
@@ -606,7 +620,7 @@ Return JSON in this format:
                         <select
                           value={extractedData.category}
                           onChange={(e) => handleFieldEdit("category", e.target.value)}
-                          className="w-full bg-background border border-primary/50 rounded-lg px-3 py-2 font-medium focus:outline-none focus:ring-2 focus:ring-primary/50"
+                          className="nice-select"
                         >
                           {filteredCategories.length > 0 ? (
                             filteredCategories.map((cat) => (
@@ -670,7 +684,7 @@ Return JSON in this format:
                           <select
                             value={extractedData.paymentMethod}
                             onChange={(e) => handleFieldEdit("paymentMethod", e.target.value)}
-                            className="w-full bg-background border border-primary/50 rounded-lg px-3 py-2 font-medium focus:outline-none focus:ring-2 focus:ring-primary/50"
+                            className="nice-select"
                           >
                             <option value="cash">Cash</option>
                             <option value="card">Card</option>

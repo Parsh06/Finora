@@ -40,6 +40,8 @@ import { calculateNextRunDate } from "@/lib/recurring-transactions";
 import { toast } from "sonner";
 import { useCategories } from "@/hooks/useCategories";
 import { usePrivacy } from "@/contexts/PrivacyContext";
+import { calculateXIRR, getSIPCashflows, calculateRealReturn } from "@/lib/sip-utils";
+import { updateSipPortfolioValue } from "@/lib/firestore";
 
 const iconMap: Record<string, React.ElementType> = {
   Film,
@@ -93,6 +95,13 @@ export const RecurringPayments = () => {
   const [formIsSIP, setFormIsSIP] = useState(false);
   const [formStepUpPercentage, setFormStepUpPercentage] = useState("10");
   const [formStepUpFrequency, setFormStepUpFrequency] = useState<"monthly" | "yearly">("yearly");
+  const [formTaxBenefit80C, setFormTaxBenefit80C] = useState(false);
+  const [formTaxBenefitNPS, setFormTaxBenefitNPS] = useState(false);
+  const [showValueModal, setShowValueModal] = useState(false);
+  const [updatingSip, setUpdatingSip] = useState<FirestoreRecurringPayment | null>(null);
+  const [newValue, setNewValue] = useState("");
+  const [showRealReturn, setShowRealReturn] = useState(false);
+  const inflationRate = 0.055; // 5.5% CPI
 
   // Format categories for display
   const formattedExpenseCategories = expenseCategories.map(cat => ({
@@ -216,15 +225,14 @@ export const RecurringPayments = () => {
     const sips = payments.filter(p => p.isSIP);
     const sipTransactions = transactions.filter(t => t.isRecurring && t.recurringPaymentId);
     
-    let totalInvested = 0;
     const sipCounts = new Map<string, number>();
-
     sipTransactions.forEach(t => {
       if (sips.some(s => s.id === t.recurringPaymentId)) {
-        totalInvested += t.amount;
         sipCounts.set(t.recurringPaymentId!, (sipCounts.get(t.recurringPaymentId!) || 0) + 1);
       }
     });
+
+    const totalInvested = sipTransactions.reduce((sum, t) => sum + t.amount, 0);
 
     const activeMonthlySIP = activePayments
       .filter(p => p.isSIP && p.type === "expense")
@@ -246,8 +254,15 @@ export const RecurringPayments = () => {
         return sum;
       }, 0);
 
+    // Calculate Portfolio XIRR
+    const allPortfolioValue = sips.reduce((sum, s) => sum + (s.currentValue || 0), 0);
+    const { cashflows: allCashflows, dates: allDates } = getSIPCashflows(sipTransactions, allPortfolioValue);
+    const portfolioXIRR = calculateXIRR(allCashflows, allDates);
+
     return {
       totalInvested,
+      totalCurrentValue: allPortfolioValue,
+      portfolioXIRR,
       activeMonthlySIP,
       nextYearProjectedSIP,
       activeSipCount: sips.filter(s => (s.status || (s.isActive ? "active" : "paused")) === "active").length,
@@ -351,7 +366,30 @@ export const RecurringPayments = () => {
     setFormIsSIP(false);
     setFormStepUpPercentage("10");
     setFormStepUpFrequency("yearly");
+    setFormTaxBenefit80C(false);
+    setFormTaxBenefitNPS(false);
     setEditingPayment(null);
+  };
+
+  const handleUpdateSipValue = async () => {
+    if (!currentUser || !updatingSip || !newValue) return;
+    
+    try {
+      const value = parseFloat(newValue);
+      if (isNaN(value) || value < 0) {
+        toast.error("Please enter a valid value");
+        return;
+      }
+
+      await updateSipPortfolioValue(currentUser.uid, updatingSip.id!, value);
+      toast.success("Portfolio value updated");
+      setShowValueModal(false);
+      setUpdatingSip(null);
+      setNewValue("");
+    } catch (error) {
+      console.error("Error updating SIP value:", error);
+      toast.error("Failed to update value");
+    }
   };
 
   const openEditModal = (payment: FirestoreRecurringPayment) => {
@@ -368,6 +406,8 @@ export const RecurringPayments = () => {
     setFormIsSIP(payment.isSIP || false);
     setFormStepUpPercentage(payment.stepUpPercentage?.toString() || "10");
     setFormStepUpFrequency(payment.stepUpFrequency || "yearly");
+    setFormTaxBenefit80C(payment.taxBenefit80C || false);
+    setFormTaxBenefitNPS(payment.taxBenefitNPS || false);
     setShowEditModal(true);
   };
 
@@ -410,6 +450,8 @@ export const RecurringPayments = () => {
         stepUpPercentage: formIsSIP ? parseFloat(formStepUpPercentage) : undefined,
         stepUpFrequency: formIsSIP ? formStepUpFrequency : undefined,
         lastStepUpDate: formIsSIP ? format(startDate, "yyyy-MM-dd") : undefined,
+        taxBenefit80C: formTaxBenefit80C,
+        taxBenefitNPS: formTaxBenefitNPS,
       });
 
       toast.success("Recurring payment added");
@@ -467,6 +509,8 @@ export const RecurringPayments = () => {
         isSIP: formIsSIP,
         stepUpPercentage: formIsSIP ? parseFloat(formStepUpPercentage) : undefined,
         stepUpFrequency: formIsSIP ? formStepUpFrequency : undefined,
+        taxBenefit80C: formTaxBenefit80C,
+        taxBenefitNPS: formTaxBenefitNPS,
       });
 
       toast.success("Recurring payment updated");
@@ -694,7 +738,7 @@ export const RecurringPayments = () => {
                 <h3 className="text-sm font-semibold text-foreground uppercase tracking-wider">SIP Performance Analysis</h3>
               </div>
               
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
                 <div className="glass-card-elevated p-4 rounded-xl border-l-4 border-l-primary relative overflow-hidden">
                   <div className="absolute top-0 right-0 p-2 opacity-5">
                     <TrendingUp className="w-12 h-12" />
@@ -704,23 +748,50 @@ export const RecurringPayments = () => {
                   <p className="text-[10px] text-primary mt-1">Sum of all SIP deposits</p>
                 </div>
 
-                <div className="glass-card-elevated p-4 rounded-xl border-l-4 border-l-success relative overflow-hidden">
+                <div className="glass-card-elevated p-4 rounded-xl border-l-4 border-l-indigo-500 relative overflow-hidden">
                   <div className="absolute top-0 right-0 p-2 opacity-5">
                     <RefreshCw className="w-12 h-12" />
                   </div>
-                  <p className="text-[10px] text-muted-foreground uppercase font-bold mb-1">Current Monthly SIP</p>
-                  <p className={`text-xl font-black text-success ${blurClass}`}>₹{Math.round(sipStats.activeMonthlySIP).toLocaleString()}</p>
-                  <p className="text-[10px] text-muted-foreground mt-1">Across {sipStats.activeSipCount} active plans</p>
+                  <p className="text-[10px] text-muted-foreground uppercase font-bold mb-1">Portfolio Value</p>
+                  <p className={`text-xl font-black text-foreground ${blurClass}`}>₹{sipStats.totalCurrentValue.toLocaleString()}</p>
+                  <p className="text-[10px] text-muted-foreground mt-1">Total of all SIP current values</p>
+                </div>
+
+                <div className="glass-card-elevated p-4 rounded-xl border-l-4 border-l-success relative overflow-hidden">
+                  <div className="absolute top-0 right-0 p-2 opacity-5">
+                    <Zap className="w-12 h-12" />
+                  </div>
+                  <p className="text-[10px] text-muted-foreground uppercase font-bold mb-1">Portfolio XIRR</p>
+                  <p className={`text-xl font-black text-success ${blurClass}`}>
+                    {(sipStats.portfolioXIRR * 100).toFixed(1)}%
+                  </p>
+                  <div className="flex items-center gap-1 mt-1">
+                    <span className="text-[10px] text-success">Real: {((sipStats.portfolioXIRR - inflationRate) * 100).toFixed(1)}%</span>
+                  </div>
                 </div>
 
                 <div className="glass-card-elevated p-4 rounded-xl border-l-4 border-l-accent relative overflow-hidden">
                   <div className="absolute top-0 right-0 p-2 opacity-5">
-                    <Zap className="w-12 h-12" />
+                    <Clock className="w-12 h-12" />
                   </div>
-                  <p className="text-[10px] text-muted-foreground uppercase font-bold mb-1">Projected Next Year</p>
-                  <p className={`text-xl font-black text-accent ${blurClass}`}>₹{Math.round(sipStats.nextYearProjectedSIP).toLocaleString()}</p>
-                  <p className="text-[10px] text-accent mt-1">Monthly (w/ step-up)</p>
+                  <p className="text-[10px] text-muted-foreground uppercase font-bold mb-1">Active Plans</p>
+                  <p className={`text-xl font-black text-accent ${blurClass}`}>{sipStats.activeSipCount}</p>
+                  <p className="text-[10px] text-muted-foreground mt-1">Across all fund houses</p>
                 </div>
+              </div>
+
+              {/* Real Return Toggle */}
+              <div className="mt-4 flex items-center justify-between p-3 bg-muted/20 rounded-xl border border-border/30">
+                <div>
+                  <h4 className="text-xs font-bold text-foreground">Inflation-Adjusted Returns</h4>
+                  <p className="text-[10px] text-muted-foreground">Showing real growth (XIRR - {inflationRate * 100}% CPI)</p>
+                </div>
+                <button
+                  onClick={() => setShowRealReturn(!showRealReturn)}
+                  className={`w-12 h-6 rounded-full p-1 transition-colors ${showRealReturn ? "bg-primary" : "bg-muted"}`}
+                >
+                  <div className={`w-4 h-4 rounded-full bg-white transition-transform ${showRealReturn ? "translate-x-6" : "translate-x-0"}`} />
+                </button>
               </div>
             </motion.div>
           )}
@@ -771,7 +842,7 @@ export const RecurringPayments = () => {
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as any)}
-              className="bg-muted/30 border border-border/50 rounded-xl px-3 py-1.5 text-xs sm:text-sm text-foreground focus:outline-none focus:border-primary/50"
+              className="nice-select !h-9 !w-32 !px-3"
             >
               <option value="nextDate">Sort by Date</option>
               <option value="name">Sort by Name</option>
@@ -884,15 +955,65 @@ export const RecurringPayments = () => {
                         )}
                       </div>
                     </div>
-                    <div className="text-right flex-shrink-0">
-                      <p className={`font-bold text-sm sm:text-base ${payment.type === "income" ? "text-success" : "text-foreground"} ${blurClass}`}>
-                        {payment.type === "income" ? "+" : ""}₹{payment.amount.toLocaleString()}
-                      </p>
-                      <p className={`text-xs ${isOverdue ? "text-destructive font-medium" : "text-muted-foreground"}`}>
-                        {daysUntil === 0 ? "Today" : daysUntil === 1 ? "Tomorrow" : daysUntil < 0 ? `${Math.abs(daysUntil)}d ago` : `In ${daysUntil}d`}
-                      </p>
+                      <div className="text-right flex-shrink-0">
+                        <p className={`font-bold text-sm sm:text-base ${payment.type === "income" ? "text-success" : "text-foreground"} ${blurClass}`}>
+                          {payment.type === "income" ? "+" : ""}₹{payment.amount.toLocaleString()}
+                        </p>
+                        <p className={`text-xs ${isOverdue ? "text-destructive font-medium" : "text-muted-foreground"}`}>
+                          {daysUntil === 0 ? "Today" : daysUntil === 1 ? "Tomorrow" : daysUntil < 0 ? `${Math.abs(daysUntil)}d ago` : `In ${daysUntil}d`}
+                        </p>
+                      </div>
                     </div>
-                  </div>
+
+                    {/* SIP Performance Section */}
+                    {payment.isSIP && (
+                      <div className="mt-4 p-3 rounded-xl bg-primary/5 border border-primary/10">
+                        <div className="flex items-center justify-between mb-2">
+                          <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">Performance Metrics</p>
+                          <button 
+                            onClick={() => {
+                              setUpdatingSip(payment);
+                              setNewValue(payment.currentValue?.toString() || "");
+                              setShowValueModal(true);
+                            }}
+                            className="text-[10px] text-primary font-bold hover:underline"
+                          >
+                            Update Value
+                          </button>
+                        </div>
+                        
+                        <div className="grid grid-cols-3 gap-2">
+                          <div className="text-center p-2 rounded-lg bg-background/50">
+                            <p className="text-[10px] text-muted-foreground mb-0.5">Value</p>
+                            <p className="text-xs font-black text-foreground">₹{(payment.currentValue || 0).toLocaleString()}</p>
+                          </div>
+                          
+                          {(() => {
+                            const sipTransactions = transactions.filter(t => t.recurringPaymentId === payment.id);
+                            const { cashflows, dates } = getSIPCashflows(sipTransactions, payment.currentValue);
+                            const xirrValue = calculateXIRR(cashflows, dates);
+                            const realReturnValue = calculateRealReturn(xirrValue, inflationRate);
+                            
+                            return (
+                              <>
+                                <div className="text-center p-2 rounded-lg bg-background/50">
+                                  <p className="text-[10px] text-muted-foreground mb-0.5">XIRR</p>
+                                  <p className={`text-xs font-black ${xirrValue >= 0 ? "text-success" : "text-destructive"}`}>
+                                    {(xirrValue * 100).toFixed(1)}%
+                                  </p>
+                                </div>
+                                <div className="text-center p-2 rounded-lg bg-background/50">
+                                  <p className="text-[10px] text-muted-foreground mb-0.5">{showRealReturn ? "Real" : "MoM"}</p>
+                                  <p className="text-xs font-black text-primary">
+                                    {showRealReturn ? (realReturnValue * 100).toFixed(1) : "---"}%
+                                  </p>
+                                </div>
+                              </>
+                            );
+                          })()}
+                        </div>
+                      </div>
+                    )}
 
                   {/* Actions */}
                   <div className="flex items-center justify-between mt-3 sm:mt-4 pt-3 sm:pt-4 border-t border-border/30">
@@ -1178,6 +1299,7 @@ export const RecurringPayments = () => {
                         </div>
                       </div>
                       <button
+                        type="button"
                         onClick={() => setFormIsSIP(!formIsSIP)}
                         className={`relative w-11 h-6 rounded-full transition-all ${formIsSIP ? "bg-primary" : "bg-muted/50"}`}
                       >
@@ -1215,7 +1337,7 @@ export const RecurringPayments = () => {
                               <select
                                 value={formStepUpFrequency}
                                 onChange={(e) => setFormStepUpFrequency(e.target.value as any)}
-                                className="w-full bg-muted/30 border border-border/50 rounded-xl py-2.5 px-3 text-sm text-foreground focus:outline-none focus:border-primary/50"
+                                className="nice-select"
                               >
                                 <option value="monthly">Every Month</option>
                                 <option value="yearly">Every Year</option>
@@ -1228,6 +1350,53 @@ export const RecurringPayments = () => {
                         </motion.div>
                       )}
                     </AnimatePresence>
+
+                    {/* Tax Benefits */}
+                    <div className="mt-4 space-y-3">
+                      <div className="flex items-center justify-between p-3 rounded-xl bg-primary/5 border border-primary/10">
+                        <div className="flex items-center gap-3">
+                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${formTaxBenefit80C ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
+                            <Check className={`w-4 h-4 ${formTaxBenefit80C ? "opacity-100" : "opacity-0"}`} />
+                          </div>
+                          <div>
+                            <p className="text-xs font-semibold text-foreground">Tax Benefit (Section 80C)</p>
+                            <p className="text-[10px] text-muted-foreground">ELSS, LIC, etc. (Max ₹1.5L)</p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setFormTaxBenefit80C(!formTaxBenefit80C)}
+                          className={`relative w-10 h-5 rounded-full transition-all ${formTaxBenefit80C ? "bg-primary" : "bg-muted/50"}`}
+                        >
+                          <motion.div
+                            className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow"
+                            animate={{ left: formTaxBenefit80C ? "calc(100% - 18px)" : "2px" }}
+                          />
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-between p-3 rounded-xl bg-primary/5 border border-primary/10">
+                        <div className="flex items-center gap-3">
+                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${formTaxBenefitNPS ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
+                            <Check className={`w-4 h-4 ${formTaxBenefitNPS ? "opacity-100" : "opacity-0"}`} />
+                          </div>
+                          <div>
+                            <p className="text-xs font-semibold text-foreground">Tax Benefit (Section 80CCD - NPS)</p>
+                            <p className="text-[10px] text-muted-foreground">National Pension Scheme (Max ₹50k)</p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setFormTaxBenefitNPS(!formTaxBenefitNPS)}
+                          className={`relative w-10 h-5 rounded-full transition-all ${formTaxBenefitNPS ? "bg-primary" : "bg-muted/50"}`}
+                        >
+                          <motion.div
+                            className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow"
+                            animate={{ left: formTaxBenefitNPS ? "calc(100% - 18px)" : "2px" }}
+                          />
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1476,6 +1645,7 @@ export const RecurringPayments = () => {
                         </div>
                       </div>
                       <button
+                        type="button"
                         onClick={() => setFormIsSIP(!formIsSIP)}
                         className={`relative w-11 h-6 rounded-full transition-all ${formIsSIP ? "bg-primary" : "bg-muted/50"}`}
                       >
@@ -1513,7 +1683,7 @@ export const RecurringPayments = () => {
                               <select
                                 value={formStepUpFrequency}
                                 onChange={(e) => setFormStepUpFrequency(e.target.value as any)}
-                                className="w-full bg-muted/30 border border-border/50 rounded-xl py-2.5 px-3 text-sm text-foreground focus:outline-none focus:border-primary/50"
+                                className="nice-select"
                               >
                                 <option value="monthly">Every Month</option>
                                 <option value="yearly">Every Year</option>
@@ -1523,6 +1693,53 @@ export const RecurringPayments = () => {
                         </motion.div>
                       )}
                     </AnimatePresence>
+
+                    {/* Tax Benefits (Edit) */}
+                    <div className="mt-4 space-y-3">
+                      <div className="flex items-center justify-between p-3 rounded-xl bg-primary/5 border border-primary/10">
+                        <div className="flex items-center gap-3">
+                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${formTaxBenefit80C ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
+                            <Check className={`w-4 h-4 ${formTaxBenefit80C ? "opacity-100" : "opacity-0"}`} />
+                          </div>
+                          <div>
+                            <p className="text-xs font-semibold text-foreground">Tax Benefit (Section 80C)</p>
+                            <p className="text-[10px] text-muted-foreground">ELSS, LIC, etc. (Max ₹1.5L)</p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setFormTaxBenefit80C(!formTaxBenefit80C)}
+                          className={`relative w-10 h-5 rounded-full transition-all ${formTaxBenefit80C ? "bg-primary" : "bg-muted/50"}`}
+                        >
+                          <motion.div
+                            className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow"
+                            animate={{ left: formTaxBenefit80C ? "calc(100% - 18px)" : "2px" }}
+                          />
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-between p-3 rounded-xl bg-primary/5 border border-primary/10">
+                        <div className="flex items-center gap-3">
+                          <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${formTaxBenefitNPS ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
+                            <Check className={`w-4 h-4 ${formTaxBenefitNPS ? "opacity-100" : "opacity-0"}`} />
+                          </div>
+                          <div>
+                            <p className="text-xs font-semibold text-foreground">Tax Benefit (Section 80CCD - NPS)</p>
+                            <p className="text-[10px] text-muted-foreground">National Pension Scheme (Max ₹50k)</p>
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setFormTaxBenefitNPS(!formTaxBenefitNPS)}
+                          className={`relative w-10 h-5 rounded-full transition-all ${formTaxBenefitNPS ? "bg-primary" : "bg-muted/50"}`}
+                        >
+                          <motion.div
+                            className="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow"
+                            animate={{ left: formTaxBenefitNPS ? "calc(100% - 18px)" : "2px" }}
+                          />
+                        </button>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1536,6 +1753,62 @@ export const RecurringPayments = () => {
                 >
                   Update Payment
                 </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Update SIP Value Modal */}
+      <AnimatePresence>
+        {showValueModal && updatingSip && (
+          <motion.div
+            className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <div 
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+              onClick={() => setShowValueModal(false)}
+            />
+            <motion.div
+              className="relative w-full max-w-sm bg-card rounded-2xl p-6 shadow-2xl border border-primary/20"
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+            >
+              <h3 className="text-lg font-bold text-foreground mb-2">Update Portfolio Value</h3>
+              <p className="text-xs text-muted-foreground mb-4">
+                Enter the current value of your <strong>{updatingSip.name}</strong> investment from your fund app.
+              </p>
+              
+              <div className="space-y-4">
+                <div>
+                  <label className="text-[10px] uppercase font-black text-muted-foreground mb-1 block">Current Value (₹)</label>
+                  <input
+                    type="number"
+                    value={newValue}
+                    onChange={(e) => setNewValue(e.target.value)}
+                    placeholder="e.g. 50000"
+                    className="nice-input !text-lg !font-black !py-4"
+                    autoFocus
+                  />
+                </div>
+                
+                <div className="flex gap-2 pt-2">
+                  <button
+                    onClick={() => setShowValueModal(false)}
+                    className="flex-1 py-3 rounded-xl bg-muted/30 text-muted-foreground font-bold text-sm"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleUpdateSipValue}
+                    className="flex-1 py-3 rounded-xl bg-primary text-primary-foreground font-bold text-sm shadow-lg shadow-primary/20"
+                  >
+                    Update
+                  </button>
+                </div>
               </div>
             </motion.div>
           </motion.div>

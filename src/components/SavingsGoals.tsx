@@ -8,7 +8,12 @@ import confetti from "canvas-confetti";
 import { usePrivacy } from "@/contexts/PrivacyContext";
 import { groqJsonCompletion, GroqMessage } from "@/lib/groq-service";
 
-export const SavingsGoals = () => {
+interface SavingsGoalsProps {
+  hideHeader?: boolean;
+  onAddTrigger?: (callback: () => void) => void;
+}
+
+export const SavingsGoals = ({ hideHeader = false, onAddTrigger }: SavingsGoalsProps) => {
     const { currentUser } = useAuth();
     const { isPrivacyEnabled } = usePrivacy();
     const [goals, setGoals] = useState<SavingsGoal[]>([]);
@@ -49,6 +54,16 @@ export const SavingsGoals = () => {
         });
         return () => unsubscribe();
     }, [currentUser]);
+
+    // Handle external add trigger
+    useEffect(() => {
+        if (onAddTrigger) {
+            onAddTrigger(() => {
+                resetForm();
+                setShowAddModal(true);
+            });
+        }
+    }, [onAddTrigger]);
 
     // Calculate Available Savings
     useEffect(() => {
@@ -258,36 +273,44 @@ export const SavingsGoals = () => {
 
     return (
         <div className="min-h-screen pb-24">
-            <header className="px-5 pt-6 pb-4 flex items-center justify-between">
-                <div>
-                    <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
-                        Savings Goals <Target className="w-6 h-6 text-primary" />
-                    </h1>
-                    <p className="text-sm text-muted-foreground">Track your dreams and wishes</p>
-                </div>
-                <div className="glass-card px-4 py-2 flex flex-col items-end hidden sm:flex">
-                    <span className="text-xs text-muted-foreground">Available to Save</span>
-                    <span className={`font-bold text-primary ${blurClass}`}>₹{availableSavings > 0 ? availableSavings.toLocaleString() : "0"}</span>
-                </div>
-                <motion.button
-                    onClick={() => { resetForm(); setShowAddModal(true); }}
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center shadow-lg shadow-primary/25"
-                >
-                    <Plus className="w-5 h-5 text-primary-foreground" />
-                </motion.button>
-            </header>
+            {!hideHeader && (
+                <header className="px-5 pt-6 pb-4 flex items-center justify-between">
+                    <div>
+                        <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
+                            Savings Goals <Target className="w-6 h-6 text-primary" />
+                        </h1>
+                        <p className="text-sm text-muted-foreground">Track your dreams and wishes</p>
+                    </div>
+                    <div className="glass-card px-4 py-2 flex flex-col items-end hidden sm:flex">
+                        <span className="text-xs text-muted-foreground">Available to Save</span>
+                        <span className={`font-bold text-primary ${blurClass}`}>₹{availableSavings > 0 ? availableSavings.toLocaleString() : "0"}</span>
+                    </div>
+                    <motion.button
+                        onClick={() => { resetForm(); setShowAddModal(true); }}
+                        whileHover={{ scale: 1.05 }}
+                        whileTap={{ scale: 0.95 }}
+                        className="w-10 h-10 rounded-xl bg-primary flex items-center justify-center shadow-lg shadow-primary/25"
+                    >
+                        <Plus className="w-5 h-5 text-primary-foreground" />
+                    </motion.button>
+                </header>
+            )}
 
             {loading ? (
                 <div className="text-center py-12 text-muted-foreground">Loading goals...</div>
             ) : goals.length === 0 ? (
-                <div className="px-5 text-center mt-12">
-                    <div className="w-20 h-20 bg-muted rounded-full flex items-center justify-center mx-auto mb-4">
+                <div className="px-5 text-center mt-12 py-12 bg-card/30 rounded-[2rem] border border-border/50">
+                    <div className="w-20 h-20 bg-muted/50 rounded-full flex items-center justify-center mx-auto mb-4">
                         <Target className="w-10 h-10 text-muted-foreground" />
                     </div>
-                    <h3 className="text-lg font-medium">No savings goals yet</h3>
-                    <p className="text-muted-foreground text-sm mt-1">Start saving for your next big thing!</p>
+                    <h3 className="text-xl font-bold">No savings goals yet</h3>
+                    <p className="text-muted-foreground text-sm mt-2 mb-8">Start saving for your next big thing today!</p>
+                    <button
+                        onClick={() => { resetForm(); setShowAddModal(true); }}
+                        className="bg-primary text-primary-foreground px-8 py-4 rounded-2xl font-bold flex items-center gap-3 mx-auto hover:scale-105 active:scale-95 transition-all shadow-xl shadow-primary/25"
+                    >
+                        <Plus className="w-6 h-6" /> Create Your First Goal
+                    </button>
                 </div>
             ) : (
                 <div className="px-5 space-y-4">

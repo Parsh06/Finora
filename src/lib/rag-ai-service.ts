@@ -1,4 +1,4 @@
-import { Transaction, Budget, RecurringPayment, SavingsGoal } from "./firestore";
+import { Transaction, Budget, RecurringPayment, SavingsGoal, MonthlyNarrative } from "./firestore";
 import { aiCache } from "./cache-service";
 
 const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY || import.meta.env.VITE_GROK_API_KEY || "";
@@ -35,15 +35,24 @@ const incrementFailureCount = () => {
   apiFailureCount++;
 };
 
+export interface FinancialAction {
+  type: "create" | "update" | "delete";
+  collection: "transactions" | "budgets" | "savingsGoals" | "recurringPayments" | "userSettings";
+  data: any;
+  confirmationMessage: string;
+}
+
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
+  action?: FinancialAction;
 }
 
 export interface FinancialContext {
   transactions?: Transaction[];
   recentTransactions: Transaction[];
   budgets?: Budget[];
+  monthlyNarrative?: string;
   recurringPayments?: RecurringPayment[];
   upcomingBills?: RecurringPayment[]; // Alias for backward compatibility
   savingsGoals?: SavingsGoal[];
@@ -293,7 +302,13 @@ export const buildRAGPrompt = (
     }
   }
 
-  // 4. Detailed Last Month Transactions
+  // 4. Monthly AI Narrative (Contextual Insight)
+  if (context.monthlyNarrative) {
+    prompt += `\n--- Monthly AI Insight ---\n`;
+    prompt += `${context.monthlyNarrative}\n`;
+  }
+
+  // 5. Detailed Last Month Transactions
   const lastMonthKey = `${lastMonth.getFullYear()}-${String(lastMonth.getMonth() + 1).padStart(2, '0')}`;
 
   if (context.recentTransactions && context.recentTransactions.length > 0) {
@@ -342,7 +357,7 @@ export const ragAIService = {
     budgets?: Budget[],
     userName?: string,
     recurringPayments?: RecurringPayment[]
-  ): Promise<string> {
+  ): Promise<{ text: string; action?: FinancialAction }> {
     if (!GROQ_API_KEY || !isValidApiKey(GROQ_API_KEY)) {
       throw new Error("Groq API key is not configured or invalid. Please set VITE_GROQ_API_KEY in your .env file.");
     }
@@ -354,7 +369,9 @@ export const ragAIService = {
     
     if (cachedResponse) {
       console.log("🚀 Serving RAG advice from cache");
-      return cachedResponse;
+      return typeof cachedResponse === 'string' 
+        ? { text: cachedResponse } 
+        : cachedResponse as { text: string; action?: FinancialAction };
     }
 
     // Skip API call if disabled due to repeated failures
@@ -365,6 +382,21 @@ export const ragAIService = {
     try {
       // Retrieve financial context
       const context = retrieveFinancialContext(transactions, budgets, recurringPayments);
+
+      // Try to fetch current month's narrative for extra context
+      try {
+        const { getMonthlyNarrative } = await import("./narrative-service");
+        const monthKey = new Date().toISOString().substring(0, 7); // YYYY-MM
+        const userId = transactions[0]?.userId;
+        if (userId) {
+          const narrative = await getMonthlyNarrative(userId, monthKey);
+          if (narrative) {
+            context.monthlyNarrative = narrative.content;
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to fetch narrative for RAG context", e);
+      }
 
       // Build RAG prompt with financial data
       const ragPrompt = buildRAGPrompt(userQuestion, context, userName);
@@ -388,7 +420,29 @@ export const ragAIService = {
                 {
                   role: "system",
                   content:
-                    "You are Finora AI, a concise financial advisor. Provide brief, direct answers (2-4 sentences max). Use specific numbers from the data. Format: ₹ for amounts. No emojis. No repetitive sections. Be factual and actionable.",
+                    `You are Finora AI, a proactive financial assistant.
+                    
+                    AGENTIC CAPABILITIES:
+                    If the user wants to add, update, or remove data (expenses, budgets, goals, SIPs), you MUST respond with a JSON action object embedded in your response.
+                    
+                    Format:
+                    {
+                      "text": "Your natural language reply",
+                      "action": {
+                        "type": "create" | "update" | "delete",
+                        "collection": "transactions" | "budgets" | "savingsGoals" | "recurringPayments" | "userSettings",
+                        "data": { ...fields... },
+                        "confirmationMessage": "Short question to ask for user approval"
+                      }
+                    }
+
+                    SUPPORTED SCHEMAS:
+                    - transactions: { title, amount, category, type: 'expense'|'income', date, paymentMethod }
+                    - budgets: { category, limit }
+                    - savingsGoals: { title, targetAmount, currentAmount, deadline }
+                    - userSettings: { salaryDate } (update only)
+
+                    Use ₹ for amounts. Be brief (2-4 sentences). Factual and actionable. No emojis.`,
                 },
                 {
                   role: "user",
@@ -409,12 +463,38 @@ export const ragAIService = {
               throw new Error("Invalid response format from API");
             }
 
-            const aiText = data.choices[0].message.content || "No response generated";
+            const aiContent = data.choices[0].message.content || "";
+            
+            // Extract JSON action if present
+            let text = aiContent;
+            let action: FinancialAction | undefined;
+
+            try {
+              // Look for JSON block in the response
+              const jsonMatch = aiContent.match(/\{[\s\S]*?\"action\"[\s\S]*?\}/);
+              if (jsonMatch) {
+                const parsed = JSON.parse(jsonMatch[0]);
+                if (parsed.action && typeof parsed.action === 'object') {
+                  action = parsed.action as FinancialAction;
+                  // If the entire response was JSON with a 'text' field
+                  if (parsed.text) {
+                    text = parsed.text;
+                  } else {
+                    // Remove the JSON block from the text if it was mixed
+                    text = aiContent.replace(jsonMatch[0], "").trim();
+                  }
+                }
+              }
+            } catch (e) {
+              console.warn("Failed to parse action JSON from AI response", e);
+            }
+
+            const result = { text, action };
             
             // 2. Cache the response
-            aiCache.set(cacheKey, aiText, 15);
+            aiCache.set(cacheKey, result, 15);
             
-            return aiText;
+            return result;
           } else {
             let errorData: any = {};
             let errorMsg = `Status ${response.status}`;

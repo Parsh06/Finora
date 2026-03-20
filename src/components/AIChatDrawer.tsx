@@ -2,8 +2,9 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { X, Send, Sparkles, AlertCircle, Bot, User, Trash2, TrendingUp, TrendingDown, Lightbulb, Target, RefreshCw, ChevronDown, ChevronUp } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { FinancialContext, ChatMessage, ragAIService } from "@/lib/rag-ai-service";
+import { FinancialContext, ChatMessage, ragAIService, FinancialAction } from "@/lib/rag-ai-service";
 import { toast } from "sonner";
+import { addTransaction, updateBudget, addSavingsGoal, updateRecurringPayment, updateUserSettings, deleteTransaction, deleteSavingsGoal } from "@/lib/firestore";
 
 interface AIChatDrawerProps {
   isOpen: boolean;
@@ -34,7 +35,10 @@ export const AIChatDrawer = ({ isOpen, onClose, context }: AIChatDrawerProps) =>
   const [liveInsights, setLiveInsights] = useState<Insight[]>([]);
   const [showFullInsights, setShowFullInsights] = useState(false);
   const [loadingInsights, setLoadingInsights] = useState(false);
+  const [actionCount, setActionCount] = useState(0);
+  const [lastAction, setLastAction] = useState<{ action: FinancialAction, originalData?: any, docId?: string } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+const MAX_ACTIONS = 10;
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -113,11 +117,112 @@ export const AIChatDrawer = ({ isOpen, onClose, context }: AIChatDrawerProps) =>
         userProfile?.name,
         context.upcomingBills as any
       );
-      setMessages(prev => [...prev, { role: "assistant", content: response }]);
+      
+      const assistantMessage: ChatMessage = { 
+        role: "assistant", 
+        content: response.text,
+        action: response.action 
+      };
+      
+      setMessages(prev => [...prev, assistantMessage]);
     } catch (error) {
       toast.error("Failed to get AI response");
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleConfirmAction = async (action: FinancialAction, index: number) => {
+    if (!currentUser) return;
+    if (actionCount >= MAX_ACTIONS) {
+      toast.error("Action limit reached for this session");
+      return;
+    }
+
+    try {
+      let docId: string | undefined;
+      let originalData: any;
+
+      switch (action.collection) {
+        case "transactions":
+          if (action.type === "create") {
+            docId = await addTransaction(currentUser.uid, action.data);
+          } else if (action.type === "delete" && action.data.id) {
+            await deleteTransaction(currentUser.uid, action.data.id);
+            docId = action.data.id;
+          }
+          break;
+        case "budgets":
+          if (action.type === "update") {
+            // Find existing budget for original data (undo support)
+            const existing = context.budgets?.find(b => b.category === action.data.category);
+            originalData = existing ? { limit: existing.limit } : null;
+            await updateBudget(currentUser.uid, action.data.category, action.data.limit);
+          }
+          break;
+        case "savingsGoals":
+          if (action.type === "create") {
+            docId = await addSavingsGoal(currentUser.uid, action.data);
+          }
+          break;
+        case "userSettings":
+          if (action.type === "update") {
+            await updateUserSettings(currentUser.uid, action.data);
+          }
+          break;
+      }
+
+      setActionCount(prev => prev + 1);
+      setLastAction({ action, originalData, docId });
+
+      // Show Undo Toast
+      toast.success("Action executed!", {
+        description: `Executed ${action.collection} ${action.type}`,
+        action: {
+          label: "Undo",
+          onClick: () => handleUndoAction(action, originalData, docId)
+        },
+        duration: 30000
+      });
+
+      // Remove action from message once triggered
+      setMessages(prev => {
+        const updated = [...prev];
+        if (updated[index]) {
+            updated[index] = { ...updated[index], action: undefined };
+        }
+        return updated;
+      });
+
+    } catch (error) {
+      console.error("Action execution failed:", error);
+      toast.error("Failed to execute action");
+    }
+  };
+
+  const handleUndoAction = async (action: FinancialAction, originalData: any, docId?: string) => {
+    if (!currentUser) return;
+    try {
+      switch (action.collection) {
+        case "transactions":
+          if (action.type === "create" && docId) {
+            await deleteTransaction(currentUser.uid, docId);
+          }
+          break;
+        case "budgets":
+          if (action.type === "update" && originalData) {
+            await updateBudget(currentUser.uid, action.data.category, originalData.limit);
+          }
+          break;
+        case "savingsGoals":
+          if (action.type === "create" && docId) {
+            await deleteSavingsGoal(currentUser.uid, docId);
+          }
+          break;
+      }
+      toast.success("Action undone");
+    } catch (e) {
+      toast.error("Undo failed");
     }
   };
 
@@ -279,6 +384,39 @@ export const AIChatDrawer = ({ isOpen, onClose, context }: AIChatDrawerProps) =>
                         : "bg-primary text-primary-foreground rounded-tr-none"
                     }`}>
                       {msg.content}
+                      
+                      {/* Action Confirmation Card */}
+                      {msg.action && (
+                        <div className="mt-3 p-3 bg-background/50 rounded-xl border border-primary/20 space-y-3">
+                          <div className="flex items-center gap-2 text-xs font-bold text-primary">
+                            <RefreshCw className="w-3.5 h-3.5 animate-spin-slow" />
+                            <span>Action Required</span>
+                          </div>
+                          <p className="text-xs font-medium">{msg.action.confirmationMessage}</p>
+                          
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => handleConfirmAction(msg.action!, i)}
+                              className="flex-1 py-2 bg-primary text-primary-foreground rounded-lg text-xs font-bold hover:opacity-90 transition-opacity"
+                            >
+                              Confirm
+                            </button>
+                            <button
+                              onClick={() => {
+                                // Just remove the action to "cancel"
+                                setMessages(prev => {
+                                  const updated = [...prev];
+                                  if (updated[i]) updated[i] = { ...updated[i], action: undefined };
+                                  return updated;
+                                });
+                              }}
+                              className="px-3 py-2 bg-muted text-muted-foreground rounded-lg text-xs font-bold"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </motion.div>

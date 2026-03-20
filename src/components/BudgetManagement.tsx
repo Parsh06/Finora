@@ -1,6 +1,6 @@
 import { motion, AnimatePresence } from "framer-motion";
 import { useState, useEffect, useMemo } from "react";
-import { Sparkles, Plus, Pencil, Trash2, X, Check } from "lucide-react";
+import { Sparkles, Plus, Pencil, Trash2, X, Check, Calendar } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { subscribeToBudgets, subscribeToTransactions, Budget, Transaction, addBudget, updateBudget, deleteBudget } from "@/lib/firestore";
 import { toast } from "sonner";
@@ -8,6 +8,12 @@ import { format } from "date-fns";
 import { AIBudgetCreator } from "./AIBudgetCreator";
 import { useCategories } from "@/hooks/useCategories";
 import { usePrivacy } from "@/contexts/PrivacyContext";
+import { 
+  calculateSavingsFirst, 
+  getSuggestedZBBAllocation, 
+  ZBBAllocation 
+} from "@/lib/budget-service";
+import { Reorder } from "framer-motion";
 
 const getStatusColor = (percentage: number) => {
   if (percentage >= 100) return "bg-destructive";
@@ -22,7 +28,7 @@ const getStatusTextColor = (percentage: number) => {
 };
 
 export const BudgetManagement = () => {
-  const { currentUser } = useAuth();
+  const { currentUser, userProfile, updateUserProfile } = useAuth();
   const { isPrivacyEnabled } = usePrivacy();
   const { expenseCategories, getCategoryIcon } = useCategories();
   const [budgets, setBudgets] = useState<Budget[]>([]);
@@ -39,6 +45,12 @@ export const BudgetManagement = () => {
   const [budgetPeriod, setBudgetPeriod] = useState<"weekly" | "monthly" | "yearly">("monthly");
   const [rolloverEnabled, setRolloverEnabled] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  
+  // ZBB Specific state
+  const [budgetingMode, setBudgetingMode] = useState<"limit" | "zerobased">("limit");
+  const [monthlyIncome, setMonthlyIncome] = useState<string>("");
+  const [savingsFirstPercent, setSavingsFirstPercent] = useState<number>(20);
+  const [isSavingsFirstEnabled, setIsSavingsFirstEnabled] = useState(false);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -51,6 +63,11 @@ export const BudgetManagement = () => {
     const unsubscribeTransactions = subscribeToTransactions(currentUser.uid, (data) => {
       setTransactions(data);
     });
+
+    // Initialize ZBB settings from profile
+    if (userProfile?.salaryAmount) setMonthlyIncome(userProfile.salaryAmount.toString());
+    if (userProfile?.budgetingMode) setBudgetingMode(userProfile.budgetingMode);
+    if (userProfile?.savingsFirstPercent) setSavingsFirstPercent(userProfile.savingsFirstPercent);
 
     return () => {
       unsubscribeBudgets();
@@ -170,6 +187,19 @@ export const BudgetManagement = () => {
   const overallPercentage = totalBudget > 0 ? Math.round((totalSpent / totalBudget) * 100) : 0;
 
   const blurClass = isPrivacyEnabled ? "blur-md select-none transition-all duration-300" : "transition-all duration-300";
+
+  // ZBB Calculations
+  const incomeNum = parseFloat(monthlyIncome) || 0;
+  const { savingsAmount, remainingToAllocate } = calculateSavingsFirst(incomeNum, isSavingsFirstEnabled ? savingsFirstPercent : 0);
+  const totalAllocated = budgetsWithSpent.reduce((sum, b) => sum + b.limit, 0);
+  const unassignedBalance = remainingToAllocate - totalAllocated;
+
+  const getUnassignedColor = () => {
+    if (unassignedBalance === 0) return "text-success";
+    if (unassignedBalance < 0) return "text-destructive";
+    if (unassignedBalance < 500) return "text-warning";
+    return "text-muted-foreground";
+  };
 
   // Calculate AI suggestion based on actual budget data
   const aiSuggestion = useMemo(() => {
@@ -346,41 +376,204 @@ export const BudgetManagement = () => {
     setBudgetPeriod("monthly");
   };
 
+  const handleModeToggle = async (mode: "limit" | "zerobased") => {
+    setBudgetingMode(mode);
+    if (currentUser) {
+      await updateUserProfile({ budgetingMode: mode });
+    }
+  };
+
+  const handleIncomeUpdate = async (value: string) => {
+    setMonthlyIncome(value);
+    const numValue = parseFloat(value);
+    if (!isNaN(numValue) && currentUser) {
+      await updateUserProfile({ salaryAmount: numValue });
+    }
+  };
+
+  const handleQuickAllocateLastMonth = () => {
+    // Logic to fetch last month's data and pre-fill
+    toast.info("Pre-filling with last month's data...");
+    // Implementation placeholder: in a real app, you'd fetch the limits from the previous month's budget snapshots
+  };
+
+  const handleAISuggestion = async () => {
+    if (!currentUser || !incomeNum) {
+      toast.error("Please enter your income first");
+      return;
+    }
+    
+    setIsSaving(true);
+    try {
+      const suggestions = await getSuggestedZBBAllocation(
+        currentUser.uid, 
+        incomeNum, 
+        expenseCategories.map(c => c.name)
+      );
+      
+      // Update budgets with AI suggestions
+      for (const suggestion of suggestions) {
+        const existing = budgets.find(b => b.category.toLowerCase() === suggestion.category.toLowerCase());
+        if (existing) {
+          await updateBudget(currentUser.uid, existing.id!, { limit: suggestion.amount });
+        } else {
+          const catData = expenseCategories.find(c => c.name.toLowerCase() === suggestion.category.toLowerCase());
+          await addBudget(currentUser.uid, {
+            category: suggestion.category,
+            icon: catData?.icon || "💰",
+            limit: suggestion.amount,
+            spent: 0,
+            period: "monthly",
+            rolloverEnabled: false,
+            rolloverAmount: 0,
+            lastProcessedPeriod: format(new Date(), "yyyy-MM")
+          });
+        }
+      }
+      toast.success("AI suggested budget applied!");
+    } catch (err) {
+      console.error("AI Allocation error:", err);
+      toast.error("Failed to get AI suggestion");
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
 
   return (
     <div className="min-h-screen pb-24">
-      {/* Header */}
+      {/* Header & Mode Toggle */}
       <header className="px-4 sm:px-5 pt-4 sm:pt-6 pb-4">
-        <div className="flex items-center justify-between mb-4 gap-2">
-          <div className="min-w-0 flex-1">
-            <h1 className="text-xl sm:text-2xl font-bold text-foreground">Budgets</h1>
-            <p className="text-muted-foreground text-xs sm:text-sm">Manage your spending limits</p>
+        <div className="flex flex-col gap-4 mb-4">
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0 flex-1">
+              <h1 className="text-xl sm:text-2xl font-bold text-foreground">Budgets</h1>
+              <p className="text-muted-foreground text-xs sm:text-sm">
+                {budgetingMode === "limit" ? "Track your monthly spending limits" : "Give every rupee a job"}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <motion.button
+                onClick={() => setShowAICreator(true)}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                className="px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl bg-gradient-to-r from-primary to-accent flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm font-medium text-primary-foreground"
+              >
+                <Sparkles className="w-3 h-3 sm:w-4 sm:h-4" />
+                <span className="hidden sm:inline">AI Create</span>
+              </motion.button>
+              <motion.button
+                onClick={handleAddClick}
+                whileHover={{ scale: 1.05 }}
+                whileTap={{ scale: 0.95 }}
+                className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-primary flex items-center justify-center flex-shrink-0"
+              >
+                <Plus className="w-4 h-4 sm:w-5 sm:h-5 text-primary-foreground" />
+              </motion.button>
+            </div>
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <motion.button
-              onClick={() => setShowAICreator(true)}
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              className="px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl bg-gradient-to-r from-primary to-accent flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm font-medium text-primary-foreground"
+
+          {/* Mode Toggle UI */}
+          <div className="flex p-1 bg-muted/30 rounded-2xl border border-border/50">
+            <button
+              onClick={() => handleModeToggle("limit")}
+              className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all ${
+                budgetingMode === "limit" ? "bg-card text-primary shadow-sm" : "text-muted-foreground"
+              }`}
             >
-              <Sparkles className="w-3 h-3 sm:w-4 sm:h-4" />
-              <span className="hidden sm:inline">AI Create</span>
-              <span className="sm:hidden">AI</span>
-            </motion.button>
-            <motion.button
-              onClick={handleAddClick}
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-primary flex items-center justify-center flex-shrink-0"
+              Limit-Based
+            </button>
+            <button
+              onClick={() => handleModeToggle("zerobased")}
+              className={`flex-1 py-2 px-3 rounded-xl text-xs font-bold transition-all ${
+                budgetingMode === "zerobased" ? "bg-card text-primary shadow-sm" : "text-muted-foreground"
+              }`}
             >
-              <Plus className="w-4 h-4 sm:w-5 sm:h-5 text-primary-foreground" />
-            </motion.button>
+              Zero-Based (ZBB)
+            </button>
           </div>
         </div>
       </header>
 
-      {/* Overall Budget Card */}
-      {budgetsWithSpent.length > 0 && (
+      {/* ZBB Header Logic */}
+      {budgetingMode === "zerobased" && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="px-4 sm:px-5 mb-6 space-y-4"
+        >
+          {/* Income & Unassigned Dashboard */}
+          <div className="glass-card-elevated p-5 relative overflow-hidden">
+            <div className="absolute top-0 right-0 w-32 h-32 bg-primary/5 rounded-full -mr-16 -mt-16 blur-3xl" />
+            
+            <div className="grid grid-cols-2 gap-6 relative z-10">
+              <div>
+                <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-1">Monthly Income</p>
+                <div className="flex items-center gap-1">
+                  <span className="text-lg font-bold text-muted-foreground">₹</span>
+                  <input
+                    type="number"
+                    value={monthlyIncome}
+                    onChange={(e) => handleIncomeUpdate(e.target.value)}
+                    className="w-full bg-transparent text-xl font-bold outline-none focus:text-primary transition-colors"
+                    placeholder="0"
+                  />
+                </div>
+              </div>
+              <div className="text-right">
+                <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider mb-1">Unassigned</p>
+                <p className={`text-xl font-black ${getUnassignedColor()}`}>
+                  ₹{unassignedBalance.toLocaleString()}
+                </p>
+              </div>
+            </div>
+
+            {/* ZBB Progress Bar */}
+            <div className="mt-4 h-1.5 bg-muted/30 rounded-full overflow-hidden">
+              <motion.div
+                className={`h-full ${unassignedBalance === 0 ? "bg-success" : unassignedBalance < 0 ? "bg-destructive" : "bg-primary"}`}
+                animate={{ width: `${Math.min((totalAllocated / remainingToAllocate) * 100, 100)}%` }}
+              />
+            </div>
+
+            <p className="text-[10px] text-muted-foreground mt-3 text-center italic">
+              {unassignedBalance === 0 
+                ? "Perfect! Every rupee has a job." 
+                : unassignedBalance > 0 
+                ? `Assign remaining ₹${unassignedBalance.toLocaleString()} to finish.` 
+                : `Over-allocated by ₹${Math.abs(unassignedBalance).toLocaleString()}.`}
+            </p>
+          </div>
+
+          {/* Quick Actions */}
+          <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+            <button 
+              onClick={handleAISuggestion}
+              className="flex-shrink-0 px-3 py-2 rounded-xl bg-primary/10 border border-primary/20 text-[10px] font-bold text-primary flex items-center gap-1.5 hover:bg-primary/20 transition-colors"
+            >
+              <Sparkles className="w-3 h-3" /> AI Suggest
+            </button>
+            <button 
+              onClick={handleQuickAllocateLastMonth}
+              className="flex-shrink-0 px-3 py-2 rounded-xl bg-muted/40 border border-border/50 text-[10px] font-bold text-foreground flex items-center gap-1.5 hover:bg-muted transition-colors"
+            >
+              <Calendar className="w-3 h-3" /> Use Last Month
+            </button>
+            <div className="flex-shrink-0 flex items-center gap-2 px-3 py-2 rounded-xl bg-muted/40 border border-border/50">
+              <span className="text-[10px] font-bold">Savings First</span>
+              <button
+                onClick={() => setIsSavingsFirstEnabled(!isSavingsFirstEnabled)}
+                className={`w-7 h-4 rounded-full p-0.5 transition-colors ${isSavingsFirstEnabled ? "bg-primary" : "bg-muted-foreground/30"}`}
+              >
+                <div className={`w-3 h-3 rounded-full bg-white transition-transform ${isSavingsFirstEnabled ? "translate-x-3" : "translate-x-0"}`} />
+              </button>
+            </div>
+          </div>
+        </motion.div>
+      )}
+
+      {/* Overall Budget Card (Limit Mode) */}
+      {budgetingMode === "limit" && budgetsWithSpent.length > 0 && (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -495,7 +688,12 @@ export const BudgetManagement = () => {
             </motion.button>
           </motion.div>
         ) : (
-          <div className="space-y-4">
+          <Reorder.Group 
+            axis="y" 
+            values={budgetsWithSpent} 
+            onReorder={(newOrder) => setBudgets(newOrder)} 
+            className="space-y-4"
+          >
             {budgetsWithSpent.map((budget, index) => {
             const effectiveLimit = budget.limit + (budget.rolloverAmount || 0);
             const percentage = Math.round((budget.spent / effectiveLimit) * 100);
@@ -503,12 +701,13 @@ export const BudgetManagement = () => {
             const isWarning = percentage >= 80 && percentage < 100;
 
             return (
-              <motion.div
+              <Reorder.Item
                 key={budget.id}
+                value={budget}
                 initial={{ opacity: 0, x: -20 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: 0.2 + index * 0.05 }}
-                className={`glass-card p-4 ${
+                className={`glass-card p-4 active:scale-[0.98] transition-all cursor-grab active:cursor-grabbing ${
                   isOverBudget ? "border-destructive/50" : isWarning ? "border-warning/50" : ""
                 }`}
               >
@@ -518,7 +717,14 @@ export const BudgetManagement = () => {
                         {getCategoryIcon(budget.category, "expense")}
                       </div>
                       <div className="min-w-0 flex-1">
-                        <p className="font-medium text-sm sm:text-base truncate">{budget.category}</p>
+                        <div className="flex items-center gap-2">
+                          <p className="font-medium text-sm sm:text-base truncate">{budget.category}</p>
+                          {budgetingMode === "zerobased" && (
+                            <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-primary/10 text-primary font-bold">
+                              {Math.round((budget.limit / remainingToAllocate) * 100)}%
+                            </span>
+                          )}
+                        </div>
                         <p className="text-xs text-muted-foreground capitalize">{budget.period}</p>
                       </div>
                     </div>
@@ -565,10 +771,10 @@ export const BudgetManagement = () => {
                     Over budget by <span className={blurClass}>₹{(budget.spent - effectiveLimit).toLocaleString()}</span>
                   </p>
                 )}
-              </motion.div>
+              </Reorder.Item>
             );
           })}
-          </div>
+          </Reorder.Group>
         )}
       </div>
 

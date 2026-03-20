@@ -5,6 +5,7 @@ interface BottomNavProps {
   activeTab: string;
   onTabChange: (tab: string) => void;
   onAddTransaction: () => void;
+  onQuickActions: () => void;
   onScanBill?: () => void;
 }
 
@@ -16,39 +17,45 @@ const navItems = [
   { id: "settings", icon: Settings, label: "More" },
 ];
 
-export const BottomNav = ({ activeTab, onTabChange, onAddTransaction, onScanBill }: BottomNavProps) => {
+export const BottomNav = ({ activeTab, onTabChange, onAddTransaction, onQuickActions, onScanBill }: BottomNavProps) => {
   return (
     <motion.nav
       initial={{ y: 100 }}
       animate={{ y: 0 }}
-      className="fixed bottom-0 inset-x-0 z-30"
+      className="fixed bottom-0 inset-x-0 z-40 pb-safe"
     >
-      <div className="mx-4 mb-4">
+      <div className="mx-6 mb-6">
         <div 
-          className="flex items-center justify-around py-3 px-2 rounded-2xl border"
+          className="flex items-center justify-around py-2 px-2 rounded-[2rem] border relative"
           style={{
-            background: "linear-gradient(180deg, hsl(220, 20%, 12% / 0.95), hsl(220, 20%, 8% / 0.95))",
-            borderColor: "hsl(220, 15%, 20% / 0.5)",
-            backdropFilter: "blur(20px)",
-            boxShadow: "0 -4px 30px hsl(220, 20%, 4% / 0.5)"
+            background: "linear-gradient(180deg, hsl(220 20% 12% / 0.8), hsl(220 20% 8% / 0.9))",
+            borderColor: "hsl(220 15% 30% / 0.3)",
+            backdropFilter: "blur(24px)",
+            boxShadow: "0 20px 50px -12px hsl(0 0% 0% / 0.7), inset 0 1px 1px hsl(0 0% 100% / 0.05)"
           }}
         >
           {navItems.map((item) => {
             if (item.isAction) {
               return (
-                <motion.button
-                  key={item.id}
-                  whileHover={{ scale: 1.1 }}
-                  whileTap={{ scale: 0.9 }}
-                  onClick={onAddTransaction}
-                  className="w-14 h-14 -mt-8 rounded-full flex items-center justify-center shadow-lg"
-                  style={{
-                    background: "var(--gradient-primary)",
-                    boxShadow: "0 4px 20px hsl(165, 80%, 45% / 0.4)"
-                  }}
-                >
-                  <Plus className="w-6 h-6 text-primary-foreground" />
-                </motion.button>
+                <div key={item.id} className="relative">
+                  <motion.div
+                    className="absolute inset-0 bg-primary/20 blur-xl rounded-full"
+                    animate={{ scale: [1, 1.2, 1], opacity: [0.3, 0.5, 0.3] }}
+                    transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
+                  />
+                  <motion.button
+                    whileHover={{ scale: 1.1 }}
+                    whileTap={{ scale: 0.9 }}
+                    onClick={onQuickActions}
+                    className="w-14 h-14 -mt-10 rounded-full flex items-center justify-center relative z-10"
+                    style={{
+                      background: "var(--gradient-primary)",
+                      boxShadow: "0 10px 25px -5px hsl(165 80% 45% / 0.5), 0 0 0 4px hsl(220 20% 8% / 0.5)"
+                    }}
+                  >
+                    <Plus className="w-6 h-6 text-primary-foreground" strokeWidth={3} />
+                  </motion.button>
+                </div>
               );
             }
 
@@ -59,16 +66,23 @@ export const BottomNav = ({ activeTab, onTabChange, onAddTransaction, onScanBill
               <button
                 key={item.id}
                 onClick={() => onTabChange(item.id)}
-                className={`nav-item ${isActive ? "active" : ""}`}
+                className="relative flex flex-col items-center gap-1 p-2 min-w-[3.5rem] transition-all duration-300 active:scale-90"
               >
+                {isActive && (
+                  <motion.div
+                    layoutId="nav-active"
+                    className="absolute top-0 w-8 h-1 bg-primary rounded-full shadow-[0_0_10px_hsl(165,80%,45%)]"
+                    transition={{ type: "spring", stiffness: 400, damping: 30 }}
+                  />
+                )}
                 <Icon 
-                  className={`w-5 h-5 transition-colors ${
-                    isActive ? "text-primary" : "text-muted-foreground"
+                  className={`w-5 h-5 transition-all duration-300 ${
+                    isActive ? "text-primary scale-110 drop-shadow-[0_0_8px_hsl(165,80%,45%,0.5)]" : "text-muted-foreground hover:text-foreground"
                   }`} 
                 />
                 <span 
-                  className={`text-xs transition-colors ${
-                    isActive ? "text-foreground font-medium" : "text-muted-foreground"
+                  className={`text-[10px] uppercase tracking-widest font-bold transition-all duration-300 ${
+                    isActive ? "text-foreground opacity-100" : "text-muted-foreground opacity-50"
                   }`}
                 >
                   {item.label}

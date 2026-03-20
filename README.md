@@ -11,10 +11,15 @@
 ### 🤖 Finora AI (Intelligent Assistant)
 - **RAG-Powered Chat**: A conversational assistant that understands your entire financial history (Transactions, Budgets, Savings).
 - **Financial Health Score**: Real-time AI analysis that scores your financial habits from 0-100.
+- **Expense DNA**: Monthly AI-generated "Spending Personality" profile (e.g., Weekend Splurger, Night Owl) with witty insights and shareable cards.
 - **Live Insights**: Proactive alerts about overspending, upcoming bills, and high-expense categories.
 
-### 📈 Smart SIP Engine (Investment Tracking)
-- **Systematic Investment Plans**: Track your recurring investments with dedicated analytics.
+### 📈 Smart SIP Engine
+-   **Predictive Cash Flow Engine**: Local AI-driven 30/60/90-day balance forecasting with "Danger Day" alerts and safety floor monitoring.
+- **Smart Category Correction**: Personal learning engine that maps merchants to your preferred categories over time.
+- **Retroactive Batch Fixing**: One-tap cleanup for historical transaction categories.
+- **Contextual Spending Narratives**: AI-generated written stories that explain *why* you spent what you did, correlating category spikes and comparing data to the previous year.
+-   **📈 Intelligent SIP Engine**: Robust Systematic Investment Plans with automated annually/monthly set-ups and automated step-up adjustments.
 - **Dynamic Step-up**: Automatically grow your SIP amounts by a chosen percentage (e.g., 5%, 10%) every month or year.
 - **SIP Performance Analysis**: Track "Total SIP Capital," "Tenure Tracking" (how long a plan has been active), and future projections.
 
@@ -30,6 +35,7 @@
 ### 📊 Financial Utilities
 - **Advanced Analytics**: Interactive spending heatmaps and category-wise breakdown charts.
 - **Dynamic Budgets**: Set monthly limits with rollover support and AI-driven budget alerts.
+- **Net Worth Tracker**: Full balance sheet (Assets vs Liabilities) with historical MoM trend visualization and SIP integration.
 - **Savings Goals**: Milestone-based tracking for your long-term purchases.
 - **Splitwise Integration**: Create groups and settle bills with friends easily.
 

@@ -1,12 +1,15 @@
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { useState, useEffect, useMemo } from "react";
-import { ArrowLeft, Filter, Search, Calendar, RefreshCw, Trash2 } from "lucide-react";
+import { ArrowLeft, Filter, Search, Calendar, RefreshCw, Trash2, Edit2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { subscribeToTransactions, Transaction, deleteTransaction } from "@/lib/firestore";
+import { subscribeToTransactions, Transaction, deleteTransaction, updateTransaction } from "@/lib/firestore";
 import { format, isToday, isYesterday, differenceInDays, startOfMonth, endOfMonth, startOfWeek, endOfWeek, startOfYear, endOfYear, startOfDay, endOfDay } from "date-fns";
 import { toast } from "sonner";
 import { DateFilter, DateFilterState } from "./DateFilter";
 import { usePrivacy } from "@/contexts/PrivacyContext";
+import { useCategories } from "@/hooks/useCategories";
+import { recordCorrection, batchUpdateTransactionsCategory } from "@/lib/merchant-service";
+import { Sparkles, Check, X, AlertCircle } from "lucide-react";
 
 const categoryIcons: Record<string, string> = {
   // Expense categories
@@ -40,6 +43,19 @@ export const Transactions = ({ onBack }: { onBack?: () => void }) => {
   const [period, setPeriod] = useState<PeriodType>("all");
   const [searchQuery, setSearchQuery] = useState("");
   const [dateFilter, setDateFilter] = useState<DateFilterState>({ mode: "all" });
+  const { expenseCategories, incomeCategories } = useCategories();
+  
+  // Category Editing State
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [showCategoryPicker, setShowCategoryPicker] = useState(false);
+  
+  // Retroactive Fix State
+  const [showRetroactiveModal, setShowRetroactiveModal] = useState<{
+    merchant: string;
+    category: string;
+    count: number;
+    isOpen: boolean;
+  }>({ merchant: "", category: "", count: 0, isOpen: false });
 
   useEffect(() => {
     if (!currentUser) return;
@@ -157,17 +173,69 @@ export const Transactions = ({ onBack }: { onBack?: () => void }) => {
 
   const handleDeleteTransaction = async (transactionId: string, transactionTitle: string) => {
     if (!currentUser) return;
-    
-    if (!confirm(`Are you sure you want to delete "${transactionTitle}"?`)) {
-      return;
-    }
+    if (!confirm(`Are you sure you want to delete "${transactionTitle}"?`)) return;
 
     try {
       await deleteTransaction(currentUser.uid, transactionId);
       toast.success("Transaction deleted successfully");
     } catch (error) {
-      console.error("Error deleting transaction:", error);
       toast.error("Failed to delete transaction");
+    }
+  };
+
+  const handleCategoryChange = async (transaction: Transaction, newCategory: string) => {
+    if (!currentUser || !transaction.id) return;
+    
+    // Save original for learning
+    const originalCategory = transaction.category;
+    
+    try {
+      // 1. Update the individual transaction
+      await updateTransaction(currentUser.uid, transaction.id, { 
+        category: newCategory 
+      });
+      
+      // 2. Record correction for learning engine
+      await recordCorrection(currentUser.uid, transaction.title, newCategory, originalCategory);
+      
+      toast.success(`Category updated to ${newCategory}`);
+      setShowCategoryPicker(false);
+      setEditingTransaction(null);
+
+      // 3. Check for retroactive fix opportunity
+      // If we have other transactions with the same title and different category
+      const others = transactions.filter(t => 
+        t.title === transaction.title && 
+        t.category !== newCategory && 
+        t.id !== transaction.id
+      );
+
+      if (others.length > 0) {
+        setShowRetroactiveModal({
+          merchant: transaction.title,
+          category: newCategory,
+          count: others.length,
+          isOpen: true
+        });
+      }
+    } catch (error) {
+      toast.error("Failed to update category");
+    }
+  };
+
+  const applyRetroactiveFix = async () => {
+    if (!currentUser || !showRetroactiveModal.merchant) return;
+    
+    try {
+      const updatedCount = await batchUpdateTransactionsCategory(
+        currentUser.uid, 
+        showRetroactiveModal.merchant, 
+        showRetroactiveModal.category
+      );
+      toast.success(`Updated ${updatedCount} past transactions!`);
+      setShowRetroactiveModal(prev => ({ ...prev, isOpen: false }));
+    } catch (error) {
+      toast.error("Failed to update past transactions");
     }
   };
 
@@ -352,6 +420,12 @@ export const Transactions = ({ onBack }: { onBack?: () => void }) => {
                                 <p className="font-medium text-foreground text-sm sm:text-base truncate">
                                   {transaction.title}
                                 </p>
+                                {transaction.isLearned && (
+                                  <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-primary/10 text-primary border border-primary/20 flex-shrink-0">
+                                    <Sparkles className="w-2.5 h-2.5" />
+                                    <span>Learned</span>
+                                  </span>
+                                )}
                                 {transaction.isRecurring && (
                                   <span className="flex items-center gap-1 px-1.5 py-0.5 rounded text-xs bg-primary/20 text-primary flex-shrink-0">
                                     <RefreshCw className="w-3 h-3" />
@@ -360,9 +434,16 @@ export const Transactions = ({ onBack }: { onBack?: () => void }) => {
                                 )}
                               </div>
                               <div className="flex items-center gap-2 mt-0.5">
-                                <p className="text-xs text-muted-foreground">
+                                <button 
+                                  onClick={() => {
+                                    setEditingTransaction(transaction);
+                                    setShowCategoryPicker(true);
+                                  }}
+                                  className="text-xs text-muted-foreground hover:text-primary transition-colors flex items-center gap-1 group bg-muted/20 px-1.5 py-0.5 rounded"
+                                >
                                   {transaction.category.charAt(0).toUpperCase() + transaction.category.slice(1)}
-                                </p>
+                                  <Edit2 className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 transition-opacity" />
+                                </button>
                                 <span className="text-muted-foreground">•</span>
                                 <p className="text-xs text-muted-foreground">{formatTime(transactionDate)}</p>
                                 {transaction.paymentMethod && (
@@ -405,6 +486,109 @@ export const Transactions = ({ onBack }: { onBack?: () => void }) => {
           </div>
         )}
       </div>
+      
+      {/* Category Picker Modal */}
+      <AnimatePresence>
+        {showCategoryPicker && editingTransaction && (
+          <motion.div
+            className="fixed inset-0 z-[60] flex items-end justify-center"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <motion.div
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+              onClick={() => setShowCategoryPicker(false)}
+            />
+            <motion.div
+              className="relative w-full max-w-lg bg-card rounded-t-3xl p-6 shadow-2xl"
+              initial={{ y: "100%" }}
+              animate={{ y: 0 }}
+              exit={{ y: "100%" }}
+              transition={{ type: "spring", damping: 25, stiffness: 300 }}
+            >
+              <div className="flex items-center justify-between mb-6">
+                <div>
+                  <h2 className="text-xl font-bold">Change Category</h2>
+                  <p className="text-sm text-muted-foreground truncate">{editingTransaction.title}</p>
+                </div>
+                <button
+                  onClick={() => setShowCategoryPicker(false)}
+                  className="w-10 h-10 rounded-full bg-muted/50 flex items-center justify-center"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="flex flex-wrap gap-2 max-h-[40vh] overflow-y-auto pb-4 scrollbar-hide">
+                {(editingTransaction.type === "expense" ? expenseCategories : incomeCategories).map((category) => (
+                  <button
+                    key={category.name}
+                    onClick={() => handleCategoryChange(editingTransaction, category.name)}
+                    className={`px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-2 ${
+                      editingTransaction.category === category.name 
+                        ? "bg-primary text-primary-foreground" 
+                        : "bg-muted/30 hover:bg-muted/50"
+                    }`}
+                  >
+                    <span>{category.icon}</span>
+                    <span>{category.name}</span>
+                    {editingTransaction.category === category.name && <Check className="w-3 h-3" />}
+                  </button>
+                ))}
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Retroactive Fix Modal */}
+      <AnimatePresence>
+        {showRetroactiveModal.isOpen && (
+          <motion.div
+            className="fixed inset-0 z-[70] flex items-center justify-center p-6"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <motion.div
+              className="absolute inset-0 bg-black/70 backdrop-blur-md"
+              onClick={() => setShowRetroactiveModal(prev => ({ ...prev, isOpen: false }))}
+            />
+            <motion.div
+              className="relative w-full max-w-sm bg-card rounded-3xl p-6 border border-primary/20 shadow-2xl"
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+            >
+              <div className="w-16 h-16 rounded-3xl bg-primary/20 flex items-center justify-center mx-auto mb-6">
+                <Sparkles className="w-8 h-8 text-primary" />
+              </div>
+              
+              <h3 className="text-xl font-bold text-center mb-2">Smart Correction</h3>
+              <p className="text-sm text-muted-foreground text-center mb-6 leading-relaxed">
+                You changed <span className="text-foreground font-bold">"{showRetroactiveModal.merchant}"</span> to {showRetroactiveModal.category}. 
+                Would you like to fix <span className="text-primary font-bold">{showRetroactiveModal.count} past transactions</span> from this merchant too?
+              </p>
+
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  onClick={() => setShowRetroactiveModal(prev => ({ ...prev, isOpen: false }))}
+                  className="py-3 rounded-xl bg-muted/30 text-foreground font-bold text-sm"
+                >
+                  No, Skip
+                </button>
+                <button
+                  onClick={applyRetroactiveFix}
+                  className="py-3 rounded-xl bg-primary text-primary-foreground font-bold text-sm shadow-lg shadow-primary/25"
+                >
+                  Yes, Fix All
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

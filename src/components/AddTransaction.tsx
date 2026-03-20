@@ -5,6 +5,8 @@ import { useAuth } from "@/contexts/AuthContext";
 import { addTransaction } from "@/lib/firestore";
 import { toast } from "sonner";
 import { useCategories } from "@/hooks/useCategories";
+import { predictCategory, normalizeMerchantName } from "@/lib/merchant-service";
+import { Sparkles, Info } from "lucide-react";
 
 interface AddTransactionProps {
   isOpen: boolean;
@@ -27,6 +29,9 @@ export const AddTransaction = ({ isOpen, onClose }: AddTransactionProps) => {
   const [note, setNote] = useState("");
   const [isSaving, setIsSaving] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
+  const [merchantName, setMerchantName] = useState("");
+  const [isLearned, setIsLearned] = useState(false);
+  const [predictionConfidence, setPredictionConfidence] = useState(0);
 
   // Reset category when type changes
   const handleTypeChange = (newType: "expense" | "income") => {
@@ -44,6 +49,20 @@ export const AddTransaction = ({ isOpen, onClose }: AddTransactionProps) => {
       }
     }
   }, [expenseCategories, incomeCategories, type, categoriesLoading, selectedCategory]);
+
+  const handleMerchantChange = async (name: string) => {
+    setMerchantName(name);
+    if (name.length > 2 && currentUser) {
+      const prediction = await predictCategory(currentUser.uid, name, selectedCategory);
+      if (prediction.isLearned) {
+        setSelectedCategory(prediction.category);
+        setIsLearned(true);
+        setPredictionConfidence(prediction.confidence);
+      } else {
+        setIsLearned(false);
+      }
+    }
+  };
 
   const handleSave = async () => {
     if (!amount || !selectedCategory || !currentUser) return;
@@ -63,11 +82,12 @@ export const AddTransaction = ({ isOpen, onClose }: AddTransactionProps) => {
       const categoryName = categories.find(cat => cat.name === selectedCategory)?.name || selectedCategory;
 
       const transactionData: any = {
-        title: `${categoryName} ${type === "income" ? "Income" : "Expense"}`,
+        title: merchantName || `${categoryName} ${type === "income" ? "Income" : "Expense"}`,
         category: selectedCategory, // Store category name
         amount: amountNum,
         type: type,
         date: new Date(),
+        isLearned: isLearned,
       };
 
       // Only add optional fields if they have values (payment method only for expenses)
@@ -92,6 +112,7 @@ export const AddTransaction = ({ isOpen, onClose }: AddTransactionProps) => {
         setSelectedCategory("");
         setSelectedPayment("");
         setNote("");
+        setIsLearned(false);
       }, 1000);
     } catch (error: any) {
       console.error("Error adding transaction:", error);
@@ -173,6 +194,20 @@ export const AddTransaction = ({ isOpen, onClose }: AddTransactionProps) => {
               </div>
             </div>
 
+            {/* Merchant / Title Input */}
+            <div className="px-4 sm:px-5 mb-4 sm:mb-6">
+              <label className="text-xs sm:text-sm text-muted-foreground mb-2 block">Merchant / Description</label>
+              <div className="glass-card p-3 sm:p-4 bg-transparent border-none">
+                <input
+                  type="text"
+                  value={merchantName}
+                  onChange={(e) => handleMerchantChange(e.target.value)}
+                  placeholder="e.g. Swiggy, Amazon, Netflix"
+                  className="w-full bg-transparent outline-none text-foreground placeholder:text-muted-foreground text-base sm:text-lg font-medium"
+                />
+              </div>
+            </div>
+
             {/* Amount Input */}
             <div className="px-4 sm:px-5 mb-4 sm:mb-6">
               <label className="text-xs sm:text-sm text-muted-foreground mb-2 block">Amount</label>
@@ -190,7 +225,19 @@ export const AddTransaction = ({ isOpen, onClose }: AddTransactionProps) => {
 
             {/* Category Selection */}
             <div className="px-4 sm:px-5 mb-4 sm:mb-6">
-              <label className="text-xs sm:text-sm text-muted-foreground mb-2 sm:mb-3 block">Category</label>
+              <div className="flex items-center justify-between mb-2 sm:mb-3">
+                <label className="text-xs sm:text-sm text-muted-foreground block">Category</label>
+                {isLearned && (
+                    <motion.div 
+                        initial={{ opacity: 0, x: 20 }}
+                        animate={{ opacity: 1, x: 0 }}
+                        className="flex items-center gap-1.5 px-2 py-1 rounded-full bg-primary/10 border border-primary/20"
+                    >
+                        <Sparkles className="w-3 h-3 text-primary" />
+                        <span className="text-[10px] font-bold text-primary uppercase">Learned Mapping</span>
+                    </motion.div>
+                )}
+              </div>
               {categoriesLoading ? (
                 <div className="flex items-center justify-center py-8">
                   <motion.div

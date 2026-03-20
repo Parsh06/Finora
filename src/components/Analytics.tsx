@@ -1,18 +1,114 @@
-import { motion } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from "recharts";
 import { useAuth } from "@/contexts/AuthContext";
 import { subscribeToTransactions, Transaction } from "@/lib/firestore";
 import { format, startOfWeek, startOfMonth, startOfYear, eachDayOfInterval, eachMonthOfInterval, subMonths, endOfYear, endOfMonth, endOfDay, startOfDay, subDays } from "date-fns";
 import { DateFilter, DateFilterState } from "./DateFilter";
-import { TrendingUp, TrendingDown, Wallet, PiggyBank, ArrowUpRight, ArrowDownLeft, Target, Download } from "lucide-react";
+import { TrendingUp, TrendingDown, Wallet, PiggyBank, ArrowUpRight, ArrowDownLeft, Target, Download, Sparkles, RefreshCw, ChevronDown, ChevronUp, Loader2, ChevronRight, Home, Flag } from "lucide-react";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
 import { toast } from "sonner";
 import { useCategories } from "@/hooks/useCategories";
 import { usePrivacy } from "@/contexts/PrivacyContext";
+import { getOrGenerateNarrative } from "@/lib/narrative-service";
+import { 
+  groupTransactionsByMerchant, 
+  getMerchantSparklineData, 
+  normalizeMerchantName 
+} from "@/lib/merchant-service";
+import { updateUserProfile } from "@/lib/firestore";
 
 type TabType = "weekly" | "monthly" | "yearly";
+
+// --- Sub-components (Level 2 & Level 3) ---
+
+const Sparkline = ({ data, color }: { data: number[], color: string }) => {
+  if (!data || data.length === 0) return null;
+  const max = Math.max(...data, 1);
+  const points = data.map((val, i) => {
+    const x = (i / (data.length - 1)) * 60;
+    const y = 20 - (val / max) * 18; // Keep some padding
+    return `${x},${y}`;
+  }).join(" ");
+
+  return (
+    <svg width="60" height="20" className="opacity-80">
+      <polyline
+        fill="none"
+        stroke={color}
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        points={points}
+      />
+    </svg>
+  );
+};
+
+const MerchantCard = ({ 
+  merchant, 
+  allTransactions, 
+  categoryTotal, 
+  onSelect,
+  watchlist,
+  onUpdateWatchlist
+}: { 
+  merchant: any, 
+  allTransactions: any[], 
+  categoryTotal: number, 
+  onSelect: () => void,
+  watchlist: string[],
+  onUpdateWatchlist: (newList: string[]) => void
+}) => {
+  const normalized = normalizeMerchantName(merchant.name);
+  const isFlagged = watchlist.includes(normalized);
+  const percentage = Math.round((merchant.total / categoryTotal) * 100);
+  const sparklineData = getMerchantSparklineData(allTransactions, normalized);
+
+  const toggleFlag = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (isFlagged) {
+      onUpdateWatchlist(watchlist.filter(m => m !== normalized));
+      toast.success("Removed from watchlist");
+    } else {
+      onUpdateWatchlist([...watchlist, normalized]);
+      toast.success("Merchant flagged for review");
+    }
+  };
+
+  return (
+    <div 
+      onClick={onSelect}
+      className="glass-card p-4 flex items-center gap-4 hover:border-primary/50 transition-all cursor-pointer group active:scale-[0.98]"
+    >
+      <div className="w-10 h-10 rounded-xl bg-secondary flex items-center justify-center text-lg font-bold flex-shrink-0 group-hover:bg-primary/10 group-hover:text-primary transition-colors">
+        {merchant.name.charAt(0)}
+      </div>
+      
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5">
+          <p className="font-bold text-sm truncate">{merchant.name}</p>
+          {isFlagged && <Flag className="w-3 h-3 text-destructive fill-destructive" />}
+        </div>
+        <div className="flex items-center gap-2 mt-0.5">
+          <p className="text-[10px] font-medium text-muted-foreground">{merchant.count} txns • {percentage}% of cat</p>
+          <Sparkline data={sparklineData} color={isFlagged ? "#ef4444" : "#14b8a6"} />
+        </div>
+      </div>
+
+      <div className="flex flex-col items-end gap-1 flex-shrink-0">
+        <p className="font-black text-sm">₹{merchant.total.toLocaleString()}</p>
+        <button 
+          onClick={toggleFlag}
+          className={`p-1 rounded-md transition-colors ${isFlagged ? "bg-destructive/10 text-destructive" : "bg-muted text-muted-foreground hover:bg-destructive/10 hover:text-destructive"}`}
+        >
+          <Flag className={`w-3 h-3 ${isFlagged ? "fill-destructive" : ""}`} />
+        </button>
+      </div>
+    </div>
+  );
+};
 
 export const Analytics = () => {
   const { currentUser, userProfile } = useAuth();
@@ -23,12 +119,62 @@ export const Analytics = () => {
   const [activeTab, setActiveTab] = useState<TabType>("monthly");
   const [isExporting, setIsExporting] = useState(false);
   const [dateFilter, setDateFilter] = useState<DateFilterState>({ mode: "all" });
+  
+  // Drill-down state
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [selectedMerchant, setSelectedMerchant] = useState<any | null>(null);
+  const [merchantInsight, setMerchantInsight] = useState<string>("");
+  const [isInsightLoading, setIsInsightLoading] = useState(false);
 
   // Refs for PDF export
   const chartRef = useRef<HTMLDivElement>(null);
   const summaryRef = useRef<HTMLDivElement>(null);
   const categoryRef = useRef<HTMLDivElement>(null);
   const insightsRef = useRef<HTMLDivElement>(null);
+
+  // Drill-down logic: Fetch AI insight for merchant breakdown
+  useEffect(() => {
+    if (selectedCategory && !selectedMerchant) {
+      const fetchInsight = async () => {
+        const topMerchants = groupTransactionsByMerchant(transactions, selectedCategory).slice(0, 3);
+        if (topMerchants.length === 0) return;
+
+        setIsInsightLoading(true);
+        try {
+          const apiKey = (import.meta.env as any).VITE_GROQ_API_KEY;
+          const prompt = `Analyze these top merchants in the "${selectedCategory}" category: ${topMerchants.map(m => `${m.name} (₹${m.total})`).join(", ")}. 
+          Provide a ONE SENTENCE observation about this breakdown. Be concise and helpful.`;
+
+          const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              "Authorization": `Bearer ${apiKey}`,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              model: "llama-3.3-70b-versatile",
+              messages: [{ role: "system", content: prompt }],
+              temperature: 0.5,
+              max_tokens: 100
+            })
+          });
+
+          if (response.ok) {
+            const data = await response.json();
+            setMerchantInsight(data.choices[0].message.content);
+          }
+        } catch (err) {
+          console.error("Merchant insight error:", err);
+        } finally {
+          setIsInsightLoading(false);
+        }
+      };
+
+      fetchInsight();
+    } else {
+      setMerchantInsight("");
+    }
+  }, [selectedCategory, selectedMerchant]);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -642,7 +788,49 @@ export const Analytics = () => {
         <div className="mb-3">
           <DateFilter value={dateFilter} onChange={setDateFilter} />
         </div>
+
+        {/* Breadcrumbs */}
+        {(selectedCategory || selectedMerchant) && (
+          <nav className="flex items-center gap-2 text-xs font-medium mb-4 overflow-x-auto no-scrollbar py-1">
+            <button 
+              onClick={() => { setSelectedCategory(null); setSelectedMerchant(null); }}
+              className="flex items-center gap-1 text-muted-foreground hover:text-primary transition-colors"
+            >
+              <Home className="w-3 h-3" />
+              All Categories
+            </button>
+            
+            {selectedCategory && (
+              <>
+                <ChevronRight className="w-3 h-3 text-muted-foreground" />
+                <button 
+                  onClick={() => setSelectedMerchant(null)}
+                  className={`whitespace-nowrap ${!selectedMerchant ? "text-primary font-bold" : "text-muted-foreground hover:text-primary transition-colors"}`}
+                >
+                  {selectedCategory}
+                </button>
+              </>
+            )}
+
+            {selectedMerchant && (
+              <>
+                <ChevronRight className="w-3 h-3 text-muted-foreground" />
+                <span className="text-primary font-bold whitespace-nowrap">
+                  {selectedMerchant.name}
+                </span>
+              </>
+            )}
+          </nav>
+        )}
       </header>
+
+      {/* Monthly AI Narrative Section */}
+      <MonthlySummary 
+        userId={currentUser?.uid || ""} 
+        date={dateFilter.mode === "month" && dateFilter.year !== undefined && dateFilter.month !== undefined 
+          ? new Date(dateFilter.year, dateFilter.month, 1) 
+          : new Date()} 
+      />
 
       {/* Summary Cards */}
       <div ref={summaryRef} className="px-4 sm:px-5 mb-4 sm:mb-6">
@@ -764,7 +952,10 @@ export const Analytics = () => {
               style={{ backgroundColor: '#000000' }}
             >
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={comparisonData} margin={{ top: 10, right: 5, left: -10, bottom: 5 }}>
+                <BarChart 
+                  data={comparisonData} 
+                  margin={{ top: 10, right: 5, left: -10, bottom: 5 }}
+                >
                   <XAxis
                     dataKey="period"
                     axisLine={false}
@@ -825,154 +1016,238 @@ export const Analytics = () => {
         </motion.div>
       )}
 
-      {/* Spending by Category */}
-      {pieData.length > 0 && (
+      {/* Drill-down Views */}
+      <div className="px-4 sm:px-5">
+        <AnimatePresence mode="wait">
+          {!selectedCategory ? (
+            /* Level 1: Category breakdown (Original level) */
+            <motion.div
+              key="level1"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0, x: -20 }}
+            >
+              <div ref={categoryRef} className="glass-card p-4 sm:p-5 mb-4 sm:mb-6 rounded-xl">
+                <h3 className="font-semibold text-sm sm:text-base mb-4">Spending by Category</h3>
+                <div className="space-y-4">
+                  {pieData.map((category, index) => {
+                    const percentage = expense > 0 ? Math.round((category.value / expense) * 100) : 0;
+                    return (
+                      <button
+                        key={category.name}
+                        onClick={() => {
+                          setSelectedCategory(category.name);
+                          window.scrollTo({ top: 0, behavior: 'smooth' });
+                        }}
+                        className="w-full text-left space-y-1.5 group hover:opacity-80 transition-opacity"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2 min-w-0 flex-1">
+                            <div
+                              className="w-6 h-6 rounded-lg flex items-center justify-center text-sm flex-shrink-0"
+                              style={{ backgroundColor: `${category.color}20` }}
+                            >
+                              {category.icon || "📦"}
+                            </div>
+                            <span className="text-sm font-medium text-foreground truncate">{category.name}</span>
+                            <ChevronRight className="w-3 h-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+                          </div>
+                          <div className="flex items-center gap-2 ml-2">
+                            <span className="text-xs text-muted-foreground">{percentage}%</span>
+                            <span className={`text-sm font-semibold text-foreground ${blurClass}`}>₹{category.value.toLocaleString()}</span>
+                          </div>
+                        </div>
+                        <div className="w-full h-1.5 bg-secondary rounded-full overflow-hidden">
+                          <div
+                            className="h-full transition-all duration-500 rounded-full"
+                            style={{
+                              width: `${percentage}%`,
+                              backgroundColor: category.color
+                            }}
+                          />
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </motion.div>
+          ) : !selectedMerchant ? (
+            /* Level 2: Merchant Breakdown */
+            <motion.div
+              key="level2"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="space-y-4 pb-12"
+            >
+              <div className="flex items-center justify-between">
+                <h3 className="font-bold text-lg">{selectedCategory} Merchants</h3>
+                <span className="text-xs text-muted-foreground">Sorted by Total Spent</span>
+              </div>
+
+              {merchantInsight && (
+                <div className="insight-card border-primary/20 bg-primary/5 p-4 py-3 flex items-start gap-3">
+                  <Sparkles className="w-4 h-4 text-primary mt-0.5 flex-shrink-0" />
+                  <p className="text-xs text-muted-foreground italic leading-relaxed">
+                    {merchantInsight}
+                  </p>
+                </div>
+              )}
+
+              {isInsightLoading && (
+                <div className="flex items-center gap-2 text-xs text-muted-foreground animate-pulse">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  AI is analyzing merchant breakdown...
+                </div>
+              )}
+
+              <div className="space-y-3">
+                {groupTransactionsByMerchant(transactions, selectedCategory).map((merchant, idx) => (
+                  <MerchantCard 
+                    key={idx} 
+                    merchant={merchant} 
+                    allTransactions={transactions}
+                    categoryTotal={pieData.find(p => p.name === selectedCategory)?.value || 0}
+                    onSelect={() => setSelectedMerchant(merchant)}
+                    watchlist={userProfile?.merchantWatchlist || []}
+                    onUpdateWatchlist={(newList) => {
+                      if (currentUser) {
+                        updateUserProfile(currentUser.uid, { merchantWatchlist: newList });
+                      }
+                    }}
+                  />
+                ))}
+              </div>
+            </motion.div>
+          ) : (
+            /* Level 3: Merchant Transaction History */
+            <motion.div
+              key="level3"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="space-y-4 pb-12"
+            >
+              <div className="glass-card p-6 flex flex-col items-center text-center relative overflow-hidden">
+                <div className="absolute top-0 right-0 w-24 h-24 bg-primary/5 rounded-full -mr-12 -mt-12 blur-2xl" />
+                <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center text-3xl font-bold text-primary mb-4 shadow-sm border border-primary/20">
+                  {selectedMerchant.name.charAt(0)}
+                </div>
+                <h2 className="text-xl font-black">{selectedMerchant.name}</h2>
+                <div className="flex items-center gap-4 mt-2">
+                  <div className="text-center">
+                    <p className="text-[10px] text-muted-foreground uppercase font-bold tracking-widest">Spent</p>
+                    <p className={`text-lg font-bold ${blurClass}`}>₹{selectedMerchant.total.toLocaleString()}</p>
+                  </div>
+                  <div className="w-px h-8 bg-border" />
+                  <div className="text-center">
+                    <p className="text-[10px] text-muted-foreground uppercase font-bold tracking-widest">Orders</p>
+                    <p className="text-lg font-bold">{selectedMerchant.count}</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-3">
+                {selectedMerchant.transactions
+                  .sort((a: any, b: any) => {
+                    const dateA = a.date instanceof Date ? a.date : a.date.toDate();
+                    const dateB = b.date instanceof Date ? b.date : b.date.toDate();
+                    return dateB.getTime() - dateA.getTime();
+                  })
+                  .map((t: any, idx: number) => {
+                    const date = t.date instanceof Date ? t.date : t.date.toDate();
+                    return (
+                      <div key={idx} className="glass-card p-4 flex items-center justify-between">
+                        <div>
+                          <p className="font-bold text-sm">{format(date, "MMM d, yyyy")}</p>
+                          <p className="text-xs text-muted-foreground">{t.merchant}</p>
+                          {t.note && <p className="text-[10px] italic text-muted-foreground mt-1">"{t.note}"</p>}
+                        </div>
+                        <p className={`font-black text-destructive ${blurClass}`}>₹{t.amount.toLocaleString()}</p>
+                      </div>
+                    );
+                  })}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* Key Insights (Only shown at top level) */}
+      {!selectedCategory && (
         <motion.div
-          ref={categoryRef}
+          ref={insightsRef}
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.4 }}
+          transition={{ delay: 0.5 }}
           className="px-4 sm:px-5 mb-4 sm:mb-6"
         >
           <div className="glass-card p-4 sm:p-5 rounded-xl">
-            <h3 className="font-semibold text-sm sm:text-base mb-4">Spending by Category</h3>
+            <h3 className="font-semibold text-sm sm:text-base mb-4 flex items-center gap-2">
+              <Target className="w-4 h-4 text-primary" />
+              Key Insights
+            </h3>
             <div className="space-y-3">
-              {topCategories.map((category, index) => {
-                const percentage = expense > 0 ? Math.round((category.value / expense) * 100) : 0;
-                return (
-                  <div key={category.name} className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2 min-w-0 flex-1">
-                        <div
-                          className="w-6 h-6 rounded-lg flex items-center justify-center text-sm flex-shrink-0"
-                          style={{ backgroundColor: `${category.color}20` }}
-                        >
-                          {category.icon || "📦"}
-                        </div>
-                        <span className="text-sm font-medium text-foreground truncate">{category.name}</span>
-                      </div>
-                      <div className="flex items-center gap-2 ml-2">
-                        <span className="text-xs text-muted-foreground">{percentage}%</span>
-                        <span className="text-sm font-semibold text-foreground">₹{category.value.toLocaleString()}</span>
-                      </div>
-                    </div>
-                    <div className="w-full h-1.5 bg-secondary rounded-full overflow-hidden">
-                      <div
-                        className="h-full transition-all duration-500 rounded-full"
-                        style={{
-                          width: `${percentage}%`,
-                          backgroundColor: category.color
-                        }}
-                      />
-                    </div>
+              {savingsRate >= 20 && (
+                <div className="flex items-start gap-3 p-3 rounded-lg bg-success/10 border border-success/20">
+                  <div className="w-6 h-6 rounded-full bg-success/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                    <TrendingUp className="w-3.5 h-3.5 text-success" />
                   </div>
-                );
-              })}
+                  <div>
+                    <p className="text-sm font-medium text-success mb-0.5">Excellent Savings Rate</p>
+                    <p className="text-xs text-muted-foreground">
+                      You're saving {Math.round(savingsRate)}% of your income. Keep up the great work!
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {savingsRate < 10 && savingsRate >= 0 && (
+                <div className="flex items-start gap-3 p-3 rounded-lg bg-warning/10 border border-warning/20">
+                  <div className="w-6 h-6 rounded-full bg-warning/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                    <Target className="w-3.5 h-3.5 text-warning" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-warning mb-0.5">Low Savings Rate</p>
+                    <p className="text-xs text-muted-foreground">
+                      Your savings rate is {Math.round(savingsRate)}%. Aim for at least 20% for better financial health.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {savings < 0 && (
+                <div className="flex items-start gap-3 p-3 rounded-lg bg-destructive/10 border border-destructive/20">
+                  <div className="w-6 h-6 rounded-full bg-destructive/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                    <TrendingDown className="w-3.5 h-3.5 text-destructive" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-destructive mb-0.5">Spending Exceeds Income</p>
+                    <p className="text-xs text-muted-foreground">
+                      You're spending ₹{Math.abs(savings).toLocaleString()} more than you earn. Consider reducing expenses or increasing income.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {topCategories.length > 0 && (
+                <div className="flex items-start gap-3 p-3 rounded-lg bg-primary/10 border border-primary/20">
+                  <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                    <Wallet className="w-3.5 h-3.5 text-primary" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-primary mb-0.5">Top Spending Category</p>
+                    <p className="text-xs text-muted-foreground">
+                      {topCategories[0].name} accounts for {expense > 0 ? Math.round((topCategories[0].value / expense) * 100) : 0}% of your expenses (₹{topCategories[0].value.toLocaleString()})
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </motion.div>
       )}
-
-      {/* Key Insights */}
-      <motion.div
-        ref={insightsRef}
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.5 }}
-        className="px-4 sm:px-5 mb-4 sm:mb-6"
-      >
-        <div className="glass-card p-4 sm:p-5 rounded-xl">
-          <h3 className="font-semibold text-sm sm:text-base mb-4 flex items-center gap-2">
-            <Target className="w-4 h-4 text-primary" />
-            Key Insights
-          </h3>
-          <div className="space-y-3">
-            {savingsRate >= 20 && (
-              <div className="flex items-start gap-3 p-3 rounded-lg bg-success/10 border border-success/20">
-                <div className="w-6 h-6 rounded-full bg-success/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <TrendingUp className="w-3.5 h-3.5 text-success" />
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-success mb-0.5">Excellent Savings Rate</p>
-                  <p className="text-xs text-muted-foreground">
-                    You're saving {Math.round(savingsRate)}% of your income. Keep up the great work!
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {savingsRate < 10 && savingsRate >= 0 && (
-              <div className="flex items-start gap-3 p-3 rounded-lg bg-warning/10 border border-warning/20">
-                <div className="w-6 h-6 rounded-full bg-warning/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <Target className="w-3.5 h-3.5 text-warning" />
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-warning mb-0.5">Low Savings Rate</p>
-                  <p className="text-xs text-muted-foreground">
-                    Your savings rate is {Math.round(savingsRate)}%. Aim for at least 20% for better financial health.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {savings < 0 && (
-              <div className="flex items-start gap-3 p-3 rounded-lg bg-destructive/10 border border-destructive/20">
-                <div className="w-6 h-6 rounded-full bg-destructive/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <TrendingDown className="w-3.5 h-3.5 text-destructive" />
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-destructive mb-0.5">Spending Exceeds Income</p>
-                  <p className="text-xs text-muted-foreground">
-                    You're spending ₹{Math.abs(savings).toLocaleString()} more than you earn. Consider reducing expenses or increasing income.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {topCategories.length > 0 && (
-              <div className="flex items-start gap-3 p-3 rounded-lg bg-primary/10 border border-primary/20">
-                <div className="w-6 h-6 rounded-full bg-primary/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <Wallet className="w-3.5 h-3.5 text-primary" />
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-primary mb-0.5">Top Spending Category</p>
-                  <p className="text-xs text-muted-foreground">
-                    {topCategories[0].name} accounts for {expense > 0 ? Math.round((topCategories[0].value / expense) * 100) : 0}% of your expenses (₹{topCategories[0].value.toLocaleString()})
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {expenseChange > 10 && (
-              <div className="flex items-start gap-3 p-3 rounded-lg bg-warning/10 border border-warning/20">
-                <div className="w-6 h-6 rounded-full bg-warning/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <ArrowUpRight className="w-3.5 h-3.5 text-warning" />
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-warning mb-0.5">Expense Increase</p>
-                  <p className="text-xs text-muted-foreground">
-                    Your expenses increased by {Math.round(expenseChange)}% compared to last {activeTab === "weekly" ? "week" : activeTab === "monthly" ? "month" : "year"}. Review your spending patterns.
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {expenseChange < -10 && (
-              <div className="flex items-start gap-3 p-3 rounded-lg bg-success/10 border border-success/20">
-                <div className="w-6 h-6 rounded-full bg-success/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <ArrowDownLeft className="w-3.5 h-3.5 text-success" />
-                </div>
-                <div>
-                  <p className="text-sm font-medium text-success mb-0.5">Expense Reduction</p>
-                  <p className="text-xs text-muted-foreground">
-                    Great job! Your expenses decreased by {Math.abs(Math.round(expenseChange))}% compared to last {activeTab === "weekly" ? "week" : activeTab === "monthly" ? "month" : "year"}.
-                  </p>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </motion.div>
 
       {/* Empty State */}
       {transactions.length === 0 && (
@@ -991,3 +1266,100 @@ export const Analytics = () => {
 };
 
 export default Analytics;
+
+const MonthlySummary = ({ userId, date }: { userId: string; date: Date }) => {
+  const [narrative, setNarrative] = useState<string>("");
+  const [loading, setLoading] = useState(false);
+  const [isExpanded, setIsExpanded] = useState(false);
+  const monthLabel = format(date, "MMMM");
+
+  const loadNarrative = async (force: boolean = false) => {
+    if (!userId) return;
+    setLoading(true);
+    try {
+      const content = await getOrGenerateNarrative(userId, date, force);
+      setNarrative(content);
+    } catch (err) {
+      console.error("Narrative load error:", err);
+      setNarrative("Unable to load spending story.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadNarrative();
+  }, [userId, date]);
+
+  return (
+    <div className="px-4 sm:px-5 mb-4 sm:mb-6">
+      <motion.div 
+        className="glass-card overflow-hidden rounded-2xl border border-primary/20"
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+      >
+        <button 
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="w-full flex items-center justify-between p-4 sm:p-5 hover:bg-white/5 transition-colors"
+        >
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-primary/20 flex items-center justify-center">
+              <Sparkles className="w-5 h-5 text-primary" />
+            </div>
+            <div className="text-left">
+              <h3 className="font-semibold text-foreground">{monthLabel} Summary</h3>
+              <p className="text-xs text-muted-foreground">AI-powered financial narrative</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {loading && <Loader2 className="w-4 h-4 text-primary animate-spin" />}
+            {isExpanded ? <ChevronUp className="w-5 h-5 text-muted-foreground" /> : <ChevronDown className="w-5 h-5 text-muted-foreground" />}
+          </div>
+        </button>
+
+        <AnimatePresence>
+          {isExpanded && (
+            <motion.div 
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="overflow-hidden"
+            >
+              <div className="p-4 sm:p-5 pt-0 border-t border-white/5">
+                <div className="bg-white/5 rounded-xl p-4 mb-4">
+                  {loading ? (
+                    <div className="space-y-2">
+                      <div className="h-4 bg-white/10 rounded w-full animate-pulse" />
+                      <div className="h-4 bg-white/10 rounded w-5/6 animate-pulse" />
+                      <div className="h-4 bg-white/10 rounded w-4/6 animate-pulse" />
+                    </div>
+                  ) : (
+                    <p className="text-sm sm:text-base text-foreground leading-relaxed italic">
+                      "{narrative}"
+                    </p>
+                  )}
+                </div>
+                <div className="flex justify-between items-center">
+                   <p className="text-[10px] text-muted-foreground">
+                    Insights based on your spending patterns and category correlations.
+                  </p>
+                  <button 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      loadNarrative(true);
+                    }}
+                    disabled={loading}
+                    className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-xs font-medium transition-colors border border-white/10"
+                  >
+                    <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} />
+                    Regenerate
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </motion.div>
+    </div>
+  );
+};

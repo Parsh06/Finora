@@ -15,7 +15,9 @@ import {
   X,
   Edit2,
   Tag,
-  Coins
+  Coins,
+  Zap,
+  Sparkles
 } from "lucide-react";
 import { FinoraLogo } from "./FinoraLogo";
 import { useAuth } from "@/contexts/AuthContext";
@@ -48,6 +50,13 @@ export const SettingsProfile = ({ onLogout }: SettingsProfileProps) => {
   const [showNameModal, setShowNameModal] = useState(false);
   const [phoneInput, setPhoneInput] = useState("");
   const [nameInput, setNameInput] = useState("");
+  const [cashFlowSettings, setCashFlowSettings] = useState({
+    balance: userProfile?.currentBalance?.toString() || "",
+    floor: userProfile?.cashFlowSafetyFloor?.toString() || "5000",
+    salary: userProfile?.salaryAmount?.toString() || "",
+    salaryDate: userProfile?.salaryDate?.toString() || "1"
+  });
+  const [showCashFlowModal, setShowCashFlowModal] = useState(false);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [loading, setLoading] = useState(true);
@@ -61,6 +70,12 @@ export const SettingsProfile = ({ onLogout }: SettingsProfileProps) => {
       setCurrency(userProfile?.currency || "INR");
       setPhoneInput(userProfile?.phone || "");
       setNameInput(userProfile?.name || currentUser.displayName || "");
+      setCashFlowSettings({
+        balance: userProfile?.currentBalance?.toString() || "",
+        floor: userProfile?.cashFlowSafetyFloor?.toString() || "5000",
+        salary: userProfile?.salaryAmount?.toString() || "",
+        salaryDate: userProfile?.salaryDate?.toString() || "1"
+      });
     }
   }, [userProfile, currentUser]);
 
@@ -185,6 +200,18 @@ export const SettingsProfile = ({ onLogout }: SettingsProfileProps) => {
         { icon: Download, label: "Export Data", description: isExporting ? "Exporting..." : "CSV, PDF", action: "link" as const },
         { icon: FileText, label: "Statements", action: "link" as const },
         { icon: Tag, label: "Manage Categories", action: "link" as const },
+      ]
+    },
+    {
+      title: "Cash Flow",
+      items: [
+        { 
+          icon: Zap, 
+          label: "Forecast Settings", 
+          description: `Floor: ₹${userProfile?.cashFlowSafetyFloor || 5000}`, 
+          action: "link" as const,
+          color: "text-warning"
+        },
       ]
     }
   ], [userProfile, currentUser, currency, isExporting]);
@@ -386,6 +413,8 @@ export const SettingsProfile = ({ onLogout }: SettingsProfileProps) => {
       toast.info("Email cannot be changed. It's linked to your Google account.");
     } else if (item.label === "Manage Categories") {
       setShowCategoryManagement(true);
+    } else if (item.label === "Forecast Settings") {
+      setShowCashFlowModal(true);
     } else if (item.label === "Export Data") {
       handleExportData();
     } else if (item.label === "Statements") {
@@ -774,7 +803,109 @@ export const SettingsProfile = ({ onLogout }: SettingsProfileProps) => {
         )}
       </AnimatePresence>
 
-      {/* Category Management */}
+      {/* Cash Flow Settings Modal */}
+      <AnimatePresence>
+        {showCashFlowModal && (
+          <motion.div
+            className="fixed inset-0 z-50 flex items-end justify-center"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <motion.div
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+              onClick={() => setShowCashFlowModal(false)}
+            />
+            <motion.div
+              className="relative w-full max-w-lg bg-card rounded-t-3xl p-6"
+              initial={{ y: "100%" }}
+              animate={{ y: 0 }}
+              exit={{ y: "100%" }}
+              transition={{ type: "spring", damping: 25, stiffness: 300 }}
+            >
+              <div className="flex items-center justify-between mb-6">
+                <div className="flex items-center gap-2">
+                    <Sparkles className="w-5 h-5 text-primary" />
+                    <h2 className="text-xl font-semibold text-foreground">Forecast Settings</h2>
+                </div>
+                <button
+                  onClick={() => setShowCashFlowModal(false)}
+                  className="w-8 h-8 rounded-full bg-muted/50 flex items-center justify-center"
+                >
+                  <X className="w-4 h-4 text-muted-foreground" />
+                </button>
+              </div>
+              
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                    <div>
+                        <label className="text-xs text-muted-foreground mb-2 block uppercase tracking-wider">Current Balance</label>
+                        <input
+                            type="number"
+                            value={cashFlowSettings.balance}
+                            onChange={(e) => setCashFlowSettings(prev => ({ ...prev, balance: e.target.value }))}
+                            className="w-full bg-muted/30 border border-border/50 rounded-xl py-3 px-4 text-foreground focus:outline-none focus:border-primary/50"
+                        />
+                    </div>
+                    <div>
+                        <label className="text-xs text-muted-foreground mb-2 block uppercase tracking-wider">Safety Floor</label>
+                        <input
+                            type="number"
+                            value={cashFlowSettings.floor}
+                            onChange={(e) => setCashFlowSettings(prev => ({ ...prev, floor: e.target.value }))}
+                            className="w-full bg-muted/30 border border-border/50 rounded-xl py-3 px-4 text-foreground focus:outline-none focus:border-primary/50"
+                        />
+                    </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                    <div>
+                        <label className="text-xs text-muted-foreground mb-2 block uppercase tracking-wider">Salary Amount</label>
+                        <input
+                            type="number"
+                            value={cashFlowSettings.salary}
+                            onChange={(e) => setCashFlowSettings(prev => ({ ...prev, salary: e.target.value }))}
+                            className="w-full bg-muted/30 border border-border/50 rounded-xl py-3 px-4 text-foreground focus:outline-none focus:border-primary/50"
+                        />
+                    </div>
+                    <div>
+                        <label className="text-xs text-muted-foreground mb-2 block uppercase tracking-wider">Salary Date</label>
+                        <select
+                            value={cashFlowSettings.salaryDate}
+                            onChange={(e) => setCashFlowSettings(prev => ({ ...prev, salaryDate: e.target.value }))}
+                            className="w-full bg-muted/30 border border-border/50 rounded-xl py-3 px-4 text-foreground focus:outline-none focus:border-primary/50"
+                        >
+                            {[...Array(31)].map((_, i) => (
+                                <option key={i+1} value={i+1}>{i+1}</option>
+                            ))}
+                        </select>
+                    </div>
+                </div>
+
+                <button
+                  onClick={async () => {
+                    try {
+                        await updateUserProfile({
+                            currentBalance: parseFloat(cashFlowSettings.balance),
+                            cashFlowSafetyFloor: parseFloat(cashFlowSettings.floor),
+                            salaryAmount: parseFloat(cashFlowSettings.salary),
+                            salaryDate: parseInt(cashFlowSettings.salaryDate)
+                        });
+                        setShowCashFlowModal(false);
+                        toast.success("Forecast settings updated");
+                    } catch (error) {
+                        toast.error("Failed to update settings");
+                    }
+                  }}
+                  className="w-full py-4 rounded-xl bg-primary text-primary-foreground font-semibold mt-4"
+                >
+                  Save Settings
+                </button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       <CategoryManagement
         isOpen={showCategoryManagement}
         onClose={() => setShowCategoryManagement(false)}
