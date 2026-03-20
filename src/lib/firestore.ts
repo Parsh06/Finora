@@ -30,7 +30,6 @@ export interface Transaction {
   note?: string;
   isRecurring?: boolean; // Flag to indicate if this was auto-generated
   recurringPaymentId?: string; // Link back to recurring payment record
-  roundUpAmount?: number; // Virtual savings from this transaction
   createdAt?: Timestamp;
   updatedAt?: Timestamp;
 }
@@ -82,9 +81,6 @@ export interface UserProfile {
   email: string;
   phone?: string;
   currency: string;
-  roundUpEnabled?: boolean;
-  roundUpTarget?: number; // 10, 50, 100
-  totalRoundUpSavings?: number;
   createdAt?: Timestamp;
   updatedAt?: Timestamp;
 }
@@ -202,7 +198,6 @@ export const addTransaction = async (
     amount: Number(transaction.amount),
     type: transaction.type,
     date: dateTimestamp,
-    roundUpAmount: transaction.roundUpAmount || 0,
     createdAt: Timestamp.now(),
     updatedAt: Timestamp.now(),
   };
@@ -230,26 +225,6 @@ export const addTransaction = async (
     // Verify collection path
     const collectionRef = transactionsCollection(userId);
     console.log("Collection reference:", collectionRef.path);
-
-    // Round-up Logic
-    let roundUpAmount = 0;
-    if (cleanedTransaction.type === "expense") {
-      const userProfile = await getUserProfile(userId);
-      if (userProfile?.roundUpEnabled) {
-        const target = userProfile.roundUpTarget || 10;
-        const amount = cleanedTransaction.amount;
-        const nextTarget = Math.ceil(amount / target) * target;
-        roundUpAmount = nextTarget - amount;
-        
-        if (roundUpAmount > 0) {
-          cleanedTransaction.roundUpAmount = roundUpAmount;
-          // Update total profile savings
-          await updateUserProfile(userId, {
-            totalRoundUpSavings: (userProfile.totalRoundUpSavings || 0) + roundUpAmount
-          });
-        }
-      }
-    }
 
     const docRef = await addDoc(collectionRef, cleanedTransaction);
 
@@ -647,10 +622,6 @@ export const updateUserProfile = async (
   }
   if (updates.currency !== undefined) updateData.currency = updates.currency;
   if (updates.userId !== undefined) updateData.userId = updates.userId;
-  if (updates.roundUpEnabled !== undefined) updateData.roundUpEnabled = updates.roundUpEnabled;
-  if (updates.roundUpTarget !== undefined) updateData.roundUpTarget = updates.roundUpTarget;
-  if (updates.totalRoundUpSavings !== undefined) updateData.totalRoundUpSavings = updates.totalRoundUpSavings;
-
   await updateDoc(userRef, updateData);
 };
 

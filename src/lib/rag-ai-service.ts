@@ -1,4 +1,4 @@
-import { Transaction, Budget, RecurringPayment } from "./firestore";
+import { Transaction, Budget, RecurringPayment, SavingsGoal } from "./firestore";
 import { aiCache } from "./cache-service";
 
 const GROQ_API_KEY = import.meta.env.VITE_GROQ_API_KEY || import.meta.env.VITE_GROK_API_KEY || "";
@@ -35,15 +35,23 @@ const incrementFailureCount = () => {
   apiFailureCount++;
 };
 
-interface FinancialContext {
-  transactions: Transaction[];
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface FinancialContext {
+  transactions?: Transaction[];
   recentTransactions: Transaction[];
   budgets?: Budget[];
   recurringPayments?: RecurringPayment[];
+  upcomingBills?: RecurringPayment[]; // Alias for backward compatibility
+  savingsGoals?: SavingsGoal[];
+  balance?: number;
   totalIncome?: number;
   totalExpense?: number;
   savings?: number;
-  monthlyTrends: Record<string, { income: number; expense: number }>;
+  monthlyTrends?: Record<string, { income: number; expense: number }>;
 }
 
 /**

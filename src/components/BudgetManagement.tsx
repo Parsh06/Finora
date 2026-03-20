@@ -169,6 +169,8 @@ export const BudgetManagement = () => {
   const totalSpent = budgetsWithSpent.reduce((sum, b) => sum + b.spent, 0);
   const overallPercentage = totalBudget > 0 ? Math.round((totalSpent / totalBudget) * 100) : 0;
 
+  const blurClass = isPrivacyEnabled ? "blur-md select-none transition-all duration-300" : "transition-all duration-300";
+
   // Calculate AI suggestion based on actual budget data
   const aiSuggestion = useMemo(() => {
     if (budgetsWithSpent.length === 0) {
@@ -344,7 +346,6 @@ export const BudgetManagement = () => {
     setBudgetPeriod("monthly");
   };
 
-  const blurClass = isPrivacyEnabled ? "blur-md select-none transition-all duration-300" : "transition-all duration-300";
 
   return (
     <div className="min-h-screen pb-24">

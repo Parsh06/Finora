@@ -6,7 +6,6 @@ import { AuthPages } from "@/components/AuthPages";
 import { Dashboard } from "@/components/Dashboard";
 import { Analytics } from "@/components/Analytics";
 import { BudgetManagement } from "@/components/BudgetManagement";
-import { EnhancedAIInsights } from "@/components/EnhancedAIInsights";
 import { Transactions } from "@/components/Transactions";
 import { AddTransaction } from "@/components/AddTransaction";
 import { BillScanner } from "@/components/BillScanner";
@@ -17,7 +16,6 @@ import { SplitGroups } from "@/components/SplitGroups";
 import { SettingsProfile } from "@/components/SettingsProfile";
 import { BottomNav } from "@/components/BottomNav";
 import { Preloader } from "@/components/Preloader";
-import { BankStatementImporter } from "@/components/BankStatementImporter";
 
 import { useAuth } from "@/contexts/AuthContext";
 import { useRecurringTransactions } from "@/hooks/useRecurringTransactions";
@@ -31,7 +29,6 @@ const Index = () => {
   const [showAddTransaction, setShowAddTransaction] = useState(false);
   const [showBillScanner, setShowBillScanner] = useState(false);
   const [showVoiceTransaction, setShowVoiceTransaction] = useState(false);
-  const [showBankImporter, setShowBankImporter] = useState(false);
 
   // Auto-process recurring transactions
   useRecurringTransactions();
@@ -88,15 +85,12 @@ const Index = () => {
             onNavigate={setActiveTab}
             onScanBill={() => setShowBillScanner(true)}
             onVoiceTransaction={() => setShowVoiceTransaction(true)}
-            onImportBankStatement={() => setShowBankImporter(true)}
           />
         );
       case "analytics":
         return <Analytics />;
       case "budgets":
         return <BudgetManagement />;
-      case "insights":
-        return <EnhancedAIInsights />;
       case "transactions":
         return <Transactions onBack={() => setActiveTab("home")} />;
       case "recurring":
@@ -140,10 +134,6 @@ const Index = () => {
         onClose={() => setShowVoiceTransaction(false)}
       />
 
-      <BankStatementImporter
-        isOpen={showBankImporter}
-        onClose={() => setShowBankImporter(false)}
-      />
     </div>
   );
 };

@@ -57,8 +57,8 @@ export const FinancialHeatmap: React.FC<FinancialHeatmapProps> = ({ transactions
       </div>
       
       <div className="grid grid-cols-7 gap-1.5 sm:gap-2">
-        {["S", "M", "T", "W", "T", "F", "S"].map(day => (
-          <div key={day} className="text-[10px] text-center text-muted-foreground font-medium pb-1">
+        {["S", "M", "T", "W", "T", "F", "S"].map((day, idx) => (
+          <div key={`${day}-${idx}`} className="text-[10px] text-center text-muted-foreground font-medium pb-1">
             {day}
           </div>
         ))}

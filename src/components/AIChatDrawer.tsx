@@ -1,8 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Send, Sparkles, AlertCircle, Bot, User, Trash2 } from "lucide-react";
+import { X, Send, Sparkles, AlertCircle, Bot, User, Trash2, TrendingUp, TrendingDown, Lightbulb, Target, RefreshCw, ChevronDown, ChevronUp } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { getAIChatResponse, FinancialContext, ChatMessage } from "@/lib/ai-chat-service";
+import { FinancialContext, ChatMessage, ragAIService } from "@/lib/rag-ai-service";
 import { toast } from "sonner";
 
 interface AIChatDrawerProps {
@@ -11,16 +11,29 @@ interface AIChatDrawerProps {
   context: FinancialContext;
 }
 
+interface Insight {
+  id: string;
+  type: "tip" | "warning" | "achievement" | "trend";
+  title: string;
+  description: string;
+  icon: any;
+  color: string;
+}
+
 export const AIChatDrawer = ({ isOpen, onClose, context }: AIChatDrawerProps) => {
-  const { currentUser } = useAuth();
+  const { currentUser, userProfile } = useAuth();
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: "assistant",
-      content: "Hi! I'm Finora AI. You can ask me things like 'Can I afford a ₹5,000 dinner tonight?' or 'How's my spending this week?'"
+      content: `Hi ${userProfile?.name || "there"}! I'm Finora AI. I've analyzed your finances and I'm ready to help. You can ask me things like 'Can I afford a ₹5,000 dinner tonight?' or 'How's my spending this week?'`
     }
   ]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [healthScore, setHealthScore] = useState<number | null>(null);
+  const [liveInsights, setLiveInsights] = useState<Insight[]>([]);
+  const [showFullInsights, setShowFullInsights] = useState(false);
+  const [loadingInsights, setLoadingInsights] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -30,6 +43,54 @@ export const AIChatDrawer = ({ isOpen, onClose, context }: AIChatDrawerProps) =>
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  useEffect(() => {
+    if (isOpen && currentUser && !healthScore && context.recentTransactions.length > 0) {
+      fetchInsights();
+    }
+  }, [isOpen, currentUser, context.recentTransactions]);
+
+  const fetchInsights = async () => {
+    if (!currentUser) return;
+    setLoadingInsights(true);
+    try {
+      const result = await ragAIService.generateInsights(
+        context.recentTransactions as any,
+        context.budgets as any,
+        userProfile?.name,
+        context.upcomingBills as any
+      );
+      
+      setHealthScore(result.healthScore);
+      
+      const iconMap: Record<string, any> = {
+        tip: Lightbulb,
+        warning: AlertCircle,
+        achievement: Target,
+        trend: TrendingUp,
+      };
+
+      const colorMap: Record<string, string> = {
+        tip: "text-emerald-400",
+        warning: "text-yellow-400",
+        achievement: "text-purple-400",
+        trend: "text-cyan-400",
+      };
+
+      const formattedInsights = result.insights.map((ins: any, idx: number) => ({
+        id: `insight-${idx}`,
+        ...ins,
+        icon: iconMap[ins.type] || Lightbulb,
+        color: colorMap[ins.type] || "text-primary"
+      }));
+
+      setLiveInsights(formattedInsights);
+    } catch (error) {
+      console.error("Failed to fetch insights:", error);
+    } finally {
+      setLoadingInsights(false);
+    }
+  };
 
   const handleSend = async () => {
     if (!input.trim() || isLoading) return;
@@ -45,7 +106,13 @@ export const AIChatDrawer = ({ isOpen, onClose, context }: AIChatDrawerProps) =>
     setIsLoading(true);
 
     try {
-      const response = await getAIChatResponse(newMessages.slice(-5), context);
+      const response = await ragAIService.generateAdvice(
+        userMessage,
+        context.recentTransactions as any,
+        context.budgets as any,
+        userProfile?.name,
+        context.upcomingBills as any
+      );
       setMessages(prev => [...prev, { role: "assistant", content: response }]);
     } catch (error) {
       toast.error("Failed to get AI response");
@@ -113,6 +180,66 @@ export const AIChatDrawer = ({ isOpen, onClose, context }: AIChatDrawerProps) =>
                   <X className="w-5 h-5" />
                 </button>
               </div>
+            </div>
+
+            {/* Financial Health & Insights */}
+            <div className="px-4 py-3 bg-primary/5 border-b border-border">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center bg-background border border-border`}>
+                    <Sparkles className={`w-4 h-4 ${healthScore && healthScore >= 80 ? 'text-emerald-400' : healthScore && healthScore >= 60 ? 'text-yellow-400' : 'text-red-400'}`} />
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-muted-foreground uppercase tracking-tight font-medium">Financial Health</p>
+                    <p className="text-sm font-bold text-foreground">
+                      {loadingInsights ? "Analyzing..." : healthScore ? `${healthScore}/100 - ${healthScore >= 80 ? 'Excellent' : healthScore >= 60 ? 'Good' : 'Needs Work'}` : "Calculating..."}
+                    </p>
+                  </div>
+                </div>
+                {liveInsights.length > 0 && (
+                  <button 
+                    onClick={() => setShowFullInsights(!showFullInsights)}
+                    className="p-1 hover:bg-muted rounded-md transition-colors"
+                  >
+                    {showFullInsights ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+                  </button>
+                )}
+              </div>
+
+              {/* Progress Bar */}
+              <div className="h-1.5 w-full bg-muted rounded-full overflow-hidden mb-2">
+                <motion.div 
+                  initial={{ width: 0 }}
+                  animate={{ width: `${healthScore || 0}%` }}
+                  className={`h-full bg-gradient-to-r ${healthScore && healthScore >= 80 ? 'from-emerald-500 to-teal-500' : healthScore && healthScore >= 60 ? 'from-yellow-500 to-orange-500' : 'from-red-500 to-pink-500'}`}
+                />
+              </div>
+
+              {/* Insights Preview/Full */}
+              <AnimatePresence>
+                {(showFullInsights || (!showFullInsights && liveInsights.length > 0)) && (
+                  <motion.div
+                    initial={{ height: 0, opacity: 0 }}
+                    animate={{ height: "auto", opacity: 1 }}
+                    exit={{ height: 0, opacity: 0 }}
+                    className="overflow-hidden"
+                  >
+                    <div className="space-y-2 pt-1">
+                      {(showFullInsights ? liveInsights : liveInsights.slice(0, 1)).map((insight) => (
+                        <div key={insight.id} className="glass-card p-2 rounded-xl flex items-start gap-2 border-primary/10">
+                          <div className="mt-0.5 p-1 rounded-md bg-muted/50">
+                            <insight.icon className={`w-3.5 h-3.5 ${insight.color}`} />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-xs font-bold text-foreground truncate">{insight.title}</p>
+                            <p className="text-[10px] text-muted-foreground leading-tight">{insight.description}</p>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </motion.div>
+                )}
+              </AnimatePresence>
             </div>
 
             {/* Context Summary Chip */}

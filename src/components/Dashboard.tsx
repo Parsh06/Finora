@@ -1,6 +1,6 @@
 import { motion } from "framer-motion";
 import { useState, useEffect, useMemo } from "react";
-import { TrendingUp, TrendingDown, Wallet, PiggyBank, Sparkles, Scan, Target, RefreshCw, Mic, Trash2, Eye, EyeOff, Users, BarChart3, Proportions, Coins, FileText } from "lucide-react";
+import { TrendingUp, TrendingDown, Wallet, PiggyBank, Sparkles, Scan, Target, RefreshCw, Mic, Trash2, Eye, EyeOff, Users, BarChart3 } from "lucide-react";
 import { FinancialHeatmap } from "./FinancialHeatmap";
 import { FinoraLogo } from "./FinoraLogo";
 import { useAuth } from "@/contexts/AuthContext";
@@ -18,7 +18,7 @@ import {
   Budget 
 } from "@/lib/firestore";
 import { AIChatDrawer } from "./AIChatDrawer";
-import { FinancialContext } from "@/lib/ai-chat-service";
+import { FinancialContext } from "@/lib/rag-ai-service";
 import { SubscriptionAuditor } from "./SubscriptionAuditor";
 import { analyzeSubscriptions, SubscriptionInsight } from "@/lib/subscription-service";
 
@@ -26,7 +26,6 @@ interface DashboardProps {
   onNavigate?: (tab: string) => void;
   onScanBill?: () => void;
   onVoiceTransaction?: () => void;
-  onImportBankStatement?: () => void;
 }
 
 const categoryIcons: Record<string, string> = {
@@ -49,7 +48,7 @@ const categoryIcons: Record<string, string> = {
   bonus: "🎯",
 };
 
-export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction, onImportBankStatement }: DashboardProps) => {
+export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction }: DashboardProps) => {
   const { currentUser, userProfile } = useAuth();
   const { isPrivacyEnabled, togglePrivacy } = usePrivacy();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -233,82 +232,6 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction, onImport
 
   const recentTransactions = filteredTransactions.slice(0, 4);
 
-  // Calculate AI Insight from actual data
-  const calculateAIInsight = () => {
-    if (transactions.length === 0) {
-      return {
-        text: "Start tracking your expenses to get personalized insights!",
-        type: "info" as const
-      };
-    }
-
-    const now = new Date();
-    const startOfWeek = new Date(now);
-    startOfWeek.setDate(now.getDate() - now.getDay());
-    startOfWeek.setHours(0, 0, 0, 0);
-
-    const lastWeekStart = new Date(startOfWeek);
-    lastWeekStart.setDate(startOfWeek.getDate() - 7);
-    const lastWeekEnd = new Date(startOfWeek);
-
-    const thisWeekExpenses = transactions.filter((t) => {
-      const date = t.date instanceof Date ? t.date : t.date.toDate();
-      return date >= startOfWeek && t.type === "expense";
-    });
-
-    const lastWeekExpenses = transactions.filter((t) => {
-      const date = t.date instanceof Date ? t.date : t.date.toDate();
-      return date >= lastWeekStart && date < lastWeekEnd && t.type === "expense";
-    });
-
-    const thisWeekTotal = thisWeekExpenses.reduce((sum, t) => sum + t.amount, 0);
-    const lastWeekTotal = lastWeekExpenses.reduce((sum, t) => sum + t.amount, 0);
-
-    if (lastWeekTotal === 0 && thisWeekTotal > 0) {
-      return {
-        text: `You've spent ₹${thisWeekTotal.toLocaleString()} this week. Keep tracking to see trends!`,
-        type: "info" as const
-      };
-    }
-
-    if (lastWeekTotal === 0) {
-      return {
-        text: "Add more transactions to get personalized spending insights!",
-        type: "info" as const
-      };
-    }
-
-    const change = ((thisWeekTotal - lastWeekTotal) / lastWeekTotal) * 100;
-    const categorySpending: Record<string, number> = {};
-
-    thisWeekExpenses.forEach(e => {
-      categorySpending[e.category] = (categorySpending[e.category] || 0) + e.amount;
-    });
-
-    const topCategory = Object.entries(categorySpending).sort(([, a], [, b]) => b - a)[0];
-
-    if (Math.abs(change) < 5) {
-      return {
-        text: `Your spending is stable. Top category: ${topCategory?.[0] || "N/A"} (₹${topCategory?.[1].toLocaleString() || 0})`,
-        type: "info" as const
-      };
-    }
-
-    if (change > 0) {
-      return {
-        text: `You spent ${Math.round(change)}% more this week. Top category: ${topCategory?.[0] || "N/A"} (₹${topCategory?.[1].toLocaleString() || 0})`,
-        type: "warning" as const
-      };
-    } else {
-      return {
-        text: `Great! You spent ${Math.abs(Math.round(change))}% less this week. Keep it up!`,
-        type: "success" as const
-      };
-    }
-  };
-
-  const aiInsight = calculateAIInsight();
-
   const blurClass = isPrivacyEnabled ? "blur-md select-none transition-all duration-300" : "transition-all duration-300";
 
   return (
@@ -405,15 +328,6 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction, onImport
               ₹{savingsValue.toLocaleString()}
             </p>
           </div>
-          <div className="glass-card p-3 sm:p-4 rounded-xl col-span-2">
-            <div className="flex items-center gap-2 mb-2">
-              <Coins className="w-4 h-4 text-amber-400 flex-shrink-0" />
-              <span className="text-xs text-muted-foreground truncate">Virtual Vault (Round-Up Savings)</span>
-            </div>
-            <p className={`text-lg sm:text-xl font-bold text-amber-400 ${blurClass}`}>
-              ₹{(userProfile?.totalRoundUpSavings || 0).toLocaleString()}
-            </p>
-          </div>
         </div>
       </motion.div>
 
@@ -503,18 +417,6 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction, onImport
             </div>
           </button>
 
-          <button
-            onClick={onImportBankStatement}
-            className="glass-card p-3 sm:p-4 flex flex-col items-center gap-2 hover:bg-muted/30 transition-colors rounded-xl active:scale-95 col-span-3 border border-primary/20 bg-primary/5"
-          >
-            <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-primary/20 flex items-center justify-center flex-shrink-0">
-              <FileText className="w-4 h-4 sm:w-5 sm:h-5 text-primary" />
-            </div>
-            <div className="text-center min-w-0">
-              <p className="font-medium text-foreground text-xs truncate">Bank Statement Importer</p>
-              <p className="text-[10px] text-muted-foreground truncate">Bulk import PDFs/Images</p>
-            </div>
-          </button>
         </div>
       </motion.div>
 
@@ -541,37 +443,6 @@ export const Dashboard = ({ onNavigate, onScanBill, onVoiceTransaction, onImport
           onIgnore={handleIgnoreInsight}
         />
       </motion.div>
-
-      {/* AI Insight Card */}
-      {transactions.length > 0 && (
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.35 }}
-          className="px-4 sm:px-5 mb-4 sm:mb-6"
-        >
-          <button
-            onClick={() => onNavigate?.("insights")}
-            className="w-full glass-card p-3 sm:p-4 text-left hover:bg-muted/30 transition-colors rounded-xl active:scale-95 border border-primary/10"
-          >
-            <div className="flex items-start gap-2 sm:gap-3">
-              <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-xl bg-primary/20 flex items-center justify-center flex-shrink-0">
-                <Sparkles className="w-4 h-4 sm:w-5 sm:h-5 text-primary" />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-xs sm:text-sm font-semibold text-foreground mb-1">AI Insight</p>
-                <p className={`text-xs sm:text-sm leading-relaxed ${aiInsight.type === "warning" ? "text-warning" :
-                  aiInsight.type === "success" ? "text-success" :
-                    "text-muted-foreground"
-                  }`}>
-                  {aiInsight.text}
-                </p>
-                <p className="text-xs text-primary mt-1 font-medium">Tap for more insights →</p>
-              </div>
-            </div>
-          </button>
-        </motion.div>
-      )}
 
       {/* Recent Transactions */}
       <motion.div
