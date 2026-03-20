@@ -31,9 +31,11 @@ import {
   addRecurringPayment,
   updateRecurringPayment,
   deleteRecurringPayment,
-  RecurringPayment as FirestoreRecurringPayment
+  RecurringPayment as FirestoreRecurringPayment,
+  getTransactions,
+  Transaction
 } from "@/lib/firestore";
-import { format, parseISO, isBefore, isToday, differenceInDays, startOfDay, addDays } from "date-fns";
+import { format, parseISO, isBefore, isToday, differenceInDays, startOfDay, addDays, differenceInMonths, differenceInYears } from "date-fns";
 import { calculateNextRunDate } from "@/lib/recurring-transactions";
 import { toast } from "sonner";
 import { useCategories } from "@/hooks/useCategories";
@@ -76,6 +78,7 @@ export const RecurringPayments = () => {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState<"name" | "amount" | "nextDate" | "frequency">("nextDate");
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
 
   // Form state
   const [formName, setFormName] = useState("");
@@ -87,6 +90,9 @@ export const RecurringPayments = () => {
   const [formPaymentMethod, setFormPaymentMethod] = useState("");
   const [formStartDate, setFormStartDate] = useState(format(new Date(), "yyyy-MM-dd"));
   const [formNextRunDate, setFormNextRunDate] = useState(format(new Date(), "yyyy-MM-dd"));
+  const [formIsSIP, setFormIsSIP] = useState(false);
+  const [formStepUpPercentage, setFormStepUpPercentage] = useState("10");
+  const [formStepUpFrequency, setFormStepUpFrequency] = useState<"monthly" | "yearly">("yearly");
 
   // Format categories for display
   const formattedExpenseCategories = expenseCategories.map(cat => ({
@@ -112,6 +118,13 @@ export const RecurringPayments = () => {
       setPayments(data);
       setLoading(false);
     });
+
+    // Fetch transactions for SIP stats
+    const fetchTransactions = async () => {
+      const data = await getTransactions(currentUser.uid);
+      setTransactions(data);
+    };
+    fetchTransactions();
 
     return () => unsubscribe();
   }, [currentUser]);
@@ -198,6 +211,66 @@ export const RecurringPayments = () => {
     };
   }, [payments, activePayments]);
 
+  // Calculate SIP specific stats
+  const sipStats = useMemo(() => {
+    const sips = payments.filter(p => p.isSIP);
+    const sipTransactions = transactions.filter(t => t.isRecurring && t.recurringPaymentId);
+    
+    let totalInvested = 0;
+    const sipCounts = new Map<string, number>();
+
+    sipTransactions.forEach(t => {
+      if (sips.some(s => s.id === t.recurringPaymentId)) {
+        totalInvested += t.amount;
+        sipCounts.set(t.recurringPaymentId!, (sipCounts.get(t.recurringPaymentId!) || 0) + 1);
+      }
+    });
+
+    const activeMonthlySIP = activePayments
+      .filter(p => p.isSIP && p.type === "expense")
+      .reduce((sum, p) => {
+        if (p.frequency === "monthly") return sum + p.amount;
+        if (p.frequency === "yearly") return sum + (p.amount / 12);
+        return sum;
+      }, 0);
+
+    const nextYearProjectedSIP = activePayments
+      .filter(p => p.isSIP && p.type === "expense")
+      .reduce((sum, p) => {
+        let amount = p.amount;
+        if (p.isSIP && p.stepUpPercentage) {
+          amount *= (1 + p.stepUpPercentage / 100);
+        }
+        if (p.frequency === "monthly") return sum + amount;
+        if (p.frequency === "yearly") return sum + (amount / 12);
+        return sum;
+      }, 0);
+
+    return {
+      totalInvested,
+      activeMonthlySIP,
+      nextYearProjectedSIP,
+      activeSipCount: sips.filter(s => (s.status || (s.isActive ? "active" : "paused")) === "active").length,
+      sipCounts
+    };
+  }, [payments, transactions, activePayments]);
+
+  const getTenureString = (startDateStr: string) => {
+    try {
+      const start = parseISO(startDateStr);
+      const today = new Date();
+      const years = differenceInYears(today, start);
+      const months = differenceInMonths(today, start) % 12;
+
+      if (years === 0 && months === 0) return "Just started";
+      if (years === 0) return `${months} mo active`;
+      if (months === 0) return `${years} yr active`;
+      return `${years} yr ${months} mo active`;
+    } catch (e) {
+      return "Active";
+    }
+  };
+
   const togglePayment = async (id: string) => {
     if (!currentUser) return;
     const payment = payments.find(p => p.id === id);
@@ -275,6 +348,9 @@ export const RecurringPayments = () => {
     setFormStartDate(format(new Date(), "yyyy-MM-dd"));
     setFormNextRunDate(format(new Date(), "yyyy-MM-dd"));
     setFormRepeatDays([]);
+    setFormIsSIP(false);
+    setFormStepUpPercentage("10");
+    setFormStepUpFrequency("yearly");
     setEditingPayment(null);
   };
 
@@ -289,6 +365,9 @@ export const RecurringPayments = () => {
     setFormPaymentMethod(payment.paymentMethod || "");
     setFormStartDate(payment.startDate || format(new Date(), "yyyy-MM-dd"));
     setFormNextRunDate(payment.nextRunDate || payment.nextDate || format(new Date(), "yyyy-MM-dd"));
+    setFormIsSIP(payment.isSIP || false);
+    setFormStepUpPercentage(payment.stepUpPercentage?.toString() || "10");
+    setFormStepUpFrequency(payment.stepUpFrequency || "yearly");
     setShowEditModal(true);
   };
 
@@ -327,6 +406,10 @@ export const RecurringPayments = () => {
         color: (formType === "expense" ? expenseCategories : incomeCategories).find(c => c.name === formCategory)?.color || "#6B7280",
         status: "active",
         reminderEnabled: false,
+        isSIP: formIsSIP,
+        stepUpPercentage: formIsSIP ? parseFloat(formStepUpPercentage) : undefined,
+        stepUpFrequency: formIsSIP ? formStepUpFrequency : undefined,
+        lastStepUpDate: formIsSIP ? format(startDate, "yyyy-MM-dd") : undefined,
       });
 
       toast.success("Recurring payment added");
@@ -381,6 +464,9 @@ export const RecurringPayments = () => {
         paymentMethod: formPaymentMethod || undefined,
         icon: getCategoryIcon(formCategory, formType) || editingPayment.icon || "📦",
         color: (formType === "expense" ? expenseCategories : incomeCategories).find(c => c.name === formCategory)?.color || editingPayment.color || "#6B7280",
+        isSIP: formIsSIP,
+        stepUpPercentage: formIsSIP ? parseFloat(formStepUpPercentage) : undefined,
+        stepUpFrequency: formIsSIP ? formStepUpFrequency : undefined,
       });
 
       toast.success("Recurring payment updated");
@@ -593,6 +679,52 @@ export const RecurringPayments = () => {
             </div>
           )}
         </motion.div>
+
+        {/* SIP Analysis Header */}
+        <AnimatePresence>
+          {sipStats.activeSipCount > 0 && (
+            <motion.div
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              className="mt-6 sm:mt-8 overflow-hidden"
+            >
+              <div className="flex items-center gap-2 mb-4">
+                <TrendingUp className="w-5 h-5 text-primary" />
+                <h3 className="text-sm font-semibold text-foreground uppercase tracking-wider">SIP Performance Analysis</h3>
+              </div>
+              
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="glass-card-elevated p-4 rounded-xl border-l-4 border-l-primary relative overflow-hidden">
+                  <div className="absolute top-0 right-0 p-2 opacity-5">
+                    <TrendingUp className="w-12 h-12" />
+                  </div>
+                  <p className="text-[10px] text-muted-foreground uppercase font-bold mb-1">Total SIP Capital</p>
+                  <p className={`text-xl font-black text-foreground ${blurClass}`}>₹{sipStats.totalInvested.toLocaleString()}</p>
+                  <p className="text-[10px] text-primary mt-1">Sum of all SIP deposits</p>
+                </div>
+
+                <div className="glass-card-elevated p-4 rounded-xl border-l-4 border-l-success relative overflow-hidden">
+                  <div className="absolute top-0 right-0 p-2 opacity-5">
+                    <RefreshCw className="w-12 h-12" />
+                  </div>
+                  <p className="text-[10px] text-muted-foreground uppercase font-bold mb-1">Current Monthly SIP</p>
+                  <p className={`text-xl font-black text-success ${blurClass}`}>₹{Math.round(sipStats.activeMonthlySIP).toLocaleString()}</p>
+                  <p className="text-[10px] text-muted-foreground mt-1">Across {sipStats.activeSipCount} active plans</p>
+                </div>
+
+                <div className="glass-card-elevated p-4 rounded-xl border-l-4 border-l-accent relative overflow-hidden">
+                  <div className="absolute top-0 right-0 p-2 opacity-5">
+                    <Zap className="w-12 h-12" />
+                  </div>
+                  <p className="text-[10px] text-muted-foreground uppercase font-bold mb-1">Projected Next Year</p>
+                  <p className={`text-xl font-black text-accent ${blurClass}`}>₹{Math.round(sipStats.nextYearProjectedSIP).toLocaleString()}</p>
+                  <p className="text-[10px] text-accent mt-1">Monthly (w/ step-up)</p>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Search and Filters */}
@@ -702,11 +834,23 @@ export const RecurringPayments = () => {
                               Overdue
                             </span>
                           )}
+                          {payment.isSIP && (
+                            <span className="px-1.5 py-0.5 rounded text-[10px] bg-primary/20 text-primary font-bold flex-shrink-0 flex items-center gap-1">
+                              <TrendingUp className="w-2.5 h-2.5" />
+                              SIP {payment.stepUpPercentage}%
+                            </span>
+                          )}
                         </div>
                         <div className="flex items-center gap-1.5 sm:gap-2 text-xs text-muted-foreground flex-wrap">
                           <span className={`capitalize ${payment.type === "income" ? "text-success font-medium" : ""}`}>
                             {payment.type || "expense"}
                           </span>
+                          {payment.isSIP && (
+                            <>
+                              <span>•</span>
+                              <span className="text-primary font-medium">Step-up {payment.stepUpFrequency}</span>
+                            </>
+                          )}
                           <span>•</span>
                           <span className="capitalize">{payment.category}</span>
                           <span>•</span>
@@ -726,6 +870,18 @@ export const RecurringPayments = () => {
                             </>
                           )}
                         </div>
+                        {payment.isSIP && (
+                          <div className="mt-2 flex items-center gap-3">
+                            <div className="flex items-center gap-1 text-[10px] text-primary/80 font-medium">
+                                <Clock className="w-3 h-3" />
+                                {getTenureString(payment.startDate)}
+                            </div>
+                            <div className="flex items-center gap-1 text-[10px] text-success/80 font-medium border-l border-border/30 pl-3">
+                                <DollarSign className="w-3 h-3" />
+                                ₹{((sipStats.sipCounts.get(payment.id!) || 0) * payment.amount).toLocaleString()} total
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                     <div className="text-right flex-shrink-0">
@@ -1010,6 +1166,69 @@ export const RecurringPayments = () => {
                       When the first payment should trigger.
                     </p>
                   </div>
+
+                  {/* SIP Step-up Section */}
+                  <div className="pt-4 border-t border-border/30">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-2">
+                        <TrendingUp className="w-5 h-5 text-primary" />
+                        <div>
+                          <p className="text-sm font-medium text-foreground">Step-up SIP</p>
+                          <p className="text-[10px] text-muted-foreground font-normal">Automatically increase amount over time</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setFormIsSIP(!formIsSIP)}
+                        className={`relative w-11 h-6 rounded-full transition-all ${formIsSIP ? "bg-primary" : "bg-muted/50"}`}
+                      >
+                        <motion.div
+                          className="absolute top-1 w-4 h-4 rounded-full bg-white shadow"
+                          animate={{ left: formIsSIP ? "calc(100% - 20px)" : "4px" }}
+                        />
+                      </button>
+                    </div>
+
+                    <AnimatePresence>
+                      {formIsSIP && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: "auto" }}
+                          exit={{ opacity: 0, height: 0 }}
+                          className="space-y-4 overflow-hidden"
+                        >
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <label className="text-xs text-muted-foreground mb-1.5 block">Increase (%)</label>
+                              <div className="relative">
+                                <input
+                                  type="number"
+                                  value={formStepUpPercentage}
+                                  onChange={(e) => setFormStepUpPercentage(e.target.value)}
+                                  className="w-full bg-muted/30 border border-border/50 rounded-xl py-2.5 px-3 text-sm text-foreground focus:outline-none focus:border-primary/50"
+                                  placeholder="10"
+                                />
+                                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">%</span>
+                              </div>
+                            </div>
+                            <div>
+                              <label className="text-xs text-muted-foreground mb-1.5 block">Frequency</label>
+                              <select
+                                value={formStepUpFrequency}
+                                onChange={(e) => setFormStepUpFrequency(e.target.value as any)}
+                                className="w-full bg-muted/30 border border-border/50 rounded-xl py-2.5 px-3 text-sm text-foreground focus:outline-none focus:border-primary/50"
+                              >
+                                <option value="monthly">Every Month</option>
+                                <option value="yearly">Every Year</option>
+                              </select>
+                            </div>
+                          </div>
+                          <p className="text-[10px] text-primary/70 bg-primary/5 p-2 rounded-lg border border-primary/10">
+                            💡 Example: ₹1,000 will become ₹{Math.round(1000 * (1 + parseFloat(formStepUpPercentage || "10") / 100)).toLocaleString()} after your first {formStepUpFrequency === "monthly" ? "month" : "year"}.
+                          </p>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
                 </div>
               </div>
 
@@ -1244,6 +1463,66 @@ export const RecurringPayments = () => {
                       <AlertCircle className="w-3 h-3" />
                       Manually override when the next transaction will trigger.
                     </p>
+                  </div>
+
+                  {/* SIP Step-up Section (Edit) */}
+                  <div className="pt-4 border-t border-border/30">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-2">
+                        <TrendingUp className="w-5 h-5 text-primary" />
+                        <div>
+                          <p className="text-sm font-medium text-foreground">Step-up SIP</p>
+                          <p className="text-[10px] text-muted-foreground font-normal">Automatically increase amount over time</p>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setFormIsSIP(!formIsSIP)}
+                        className={`relative w-11 h-6 rounded-full transition-all ${formIsSIP ? "bg-primary" : "bg-muted/50"}`}
+                      >
+                        <motion.div
+                          className="absolute top-1 w-4 h-4 rounded-full bg-white shadow"
+                          animate={{ left: formIsSIP ? "calc(100% - 20px)" : "4px" }}
+                        />
+                      </button>
+                    </div>
+
+                    <AnimatePresence>
+                      {formIsSIP && (
+                        <motion.div
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: "auto" }}
+                          exit={{ opacity: 0, height: 0 }}
+                          className="space-y-4 overflow-hidden"
+                        >
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <label className="text-xs text-muted-foreground mb-1.5 block">Increase (%)</label>
+                              <div className="relative">
+                                <input
+                                  type="number"
+                                  value={formStepUpPercentage}
+                                  onChange={(e) => setFormStepUpPercentage(e.target.value)}
+                                  className="w-full bg-muted/30 border border-border/50 rounded-xl py-2.5 px-3 text-sm text-foreground focus:outline-none focus:border-primary/50"
+                                  placeholder="10"
+                                />
+                                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">%</span>
+                              </div>
+                            </div>
+                            <div>
+                              <label className="text-xs text-muted-foreground mb-1.5 block">Frequency</label>
+                              <select
+                                value={formStepUpFrequency}
+                                onChange={(e) => setFormStepUpFrequency(e.target.value as any)}
+                                className="w-full bg-muted/30 border border-border/50 rounded-xl py-2.5 px-3 text-sm text-foreground focus:outline-none focus:border-primary/50"
+                              >
+                                <option value="monthly">Every Month</option>
+                                <option value="yearly">Every Year</option>
+                              </select>
+                            </div>
+                          </div>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                   </div>
                 </div>
               </div>

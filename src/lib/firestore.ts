@@ -65,6 +65,11 @@ export interface RecurringPayment {
   color: string;
   status: "active" | "paused" | "cancelled";
   reminderEnabled: boolean;
+  // SIP Step-up fields
+  isSIP?: boolean;
+  stepUpPercentage?: number;
+  stepUpFrequency?: "monthly" | "yearly";
+  lastStepUpDate?: string; // ISO yyyy-MM-dd
   createdAt?: Timestamp;
   updatedAt?: Timestamp;
   // Legacy fields for backward compatibility

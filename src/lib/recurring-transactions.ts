@@ -18,7 +18,9 @@ import {
   isSameDay,
   isBefore,
   startOfDay,
-  isToday
+  isToday,
+  differenceInMonths,
+  differenceInYears
 } from "date-fns";
 import { getDocs, query, where, Timestamp } from "firebase/firestore";
 
@@ -251,9 +253,38 @@ export const processRecurringPayments = async (userId: string): Promise<{
         // Skip if cancelled or paused
         if (payment.status === "cancelled" || payment.status === "paused" ||
           (payment.isActive === false && payment.status !== "active")) {
-          stats.skipped++;
           continue;
         }
+        
+        // --- SIP Step-up Logic START ---
+        if (payment.isSIP && payment.stepUpPercentage && payment.stepUpFrequency) {
+            const lastStepUpStr = payment.lastStepUpDate || payment.startDate || todayStr;
+            const lastStepUp = startOfDay(parseISO(lastStepUpStr));
+            
+            const periodsPassed = payment.stepUpFrequency === "monthly"
+                ? differenceInMonths(today, lastStepUp)
+                : differenceInYears(today, lastStepUp);
+
+            if (periodsPassed >= 1) {
+                // Compound the increase for missed periods
+                const multiplier = Math.pow(1 + (payment.stepUpPercentage / 100), periodsPassed);
+                const newAmount = Math.round(payment.amount * multiplier);
+                
+                // Update local payment object for immediate transaction creation
+                payment.amount = newAmount;
+                payment.lastStepUpDate = todayStr;
+                
+                // Update Firestore
+                if (payment.id) {
+                    await updateRecurringPayment(userId, payment.id, {
+                        amount: newAmount,
+                        lastStepUpDate: todayStr
+                    });
+                    console.log(`🚀 SIP Step-up: ${payment.name} increased to ₹${newAmount} (${periodsPassed} period(s) passed)`);
+                }
+            }
+        }
+        // --- SIP Step-up Logic END ---
 
         // Get next run date (use nextRunDate or nextDate for legacy)
         const nextRunDateStr = payment.nextRunDate || payment.nextDate;
