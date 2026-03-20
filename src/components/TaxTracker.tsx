@@ -40,7 +40,7 @@ export const TaxTracker: React.FC<{ onAddTrigger?: (callback: () => void) => voi
 
     // Fetch all necessary data to calculate tax progress
     const transactionsQuery = query(collection(db, `users/${currentUser.uid}/transactions`));
-    const recurringQuery = query(collection(db, `users/${currentUser.uid}/recurring_payments`));
+    const recurringQuery = query(collection(db, `users/${currentUser.uid}/recurringPayments`));
     const assetsQuery = query(collection(db, `users/${currentUser.uid}/assets`));
 
     let transactions: Transaction[] = [];
